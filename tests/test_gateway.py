@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 
@@ -772,6 +773,51 @@ def test_gateway_routes_multi_upstreams_by_model(monkeypatch, test_config, bucke
     assert captured[1]["url"] == "https://api.siliconflow.cn/v1/chat/completions"
     assert captured[1]["auth"] == "Bearer siliconflow-secret"
     assert captured[1]["json"]["model"] == "THUDM/GLM-4-32B"
+
+
+def test_gateway_adds_openai_prompt_cache_hints(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(
+        test_config,
+        prompt_cache="openai",
+        prompt_cache_retention="24h",
+    )
+    app, _, _, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-openai-cache",
+            },
+            json={"messages": [{"role": "user", "content": "你好"}]},
+        )
+
+    assert response.status_code == 200
+    forwarded = captured[0]["json"]
+    assert forwarded["prompt_cache_key"] == "sess-openai-cache"
+    assert forwarded["prompt_cache_retention"] == "24h"
+
+
+def test_gateway_logs_provider_cache_usage(monkeypatch, test_config, bucket_mgr, caplog):
+    _, service, _, _ = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+    caplog.set_level(logging.INFO, logger="ombre_brain.gateway")
+
+    service._log_cache_usage(
+        "sess-cache-log",
+        "claude-sonnet",
+        "/v1/messages",
+        {
+            "input_tokens": 52,
+            "output_tokens": 7,
+            "cache_read_input_tokens": 1800,
+            "cache_creation_input_tokens": 200,
+        },
+    )
+
+    assert "cache_read_input_tokens=1800" in caplog.text
+    assert "cache_creation_input_tokens=200" in caplog.text
+    assert "completion_tokens=7" in caplog.text
 
 
 def test_gateway_preserves_tool_call_fields(monkeypatch, test_config, bucket_mgr):

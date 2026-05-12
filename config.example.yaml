@@ -95,6 +95,11 @@ gateway:
   upstream_models:
     - "gpt-4.1-mini"
     - "gpt-4.1"
+  # Optional prompt cache hints / 可选提示缓存参数
+  # openai: send prompt_cache_key using X-Ombre-Session-Id; leave empty for other providers.
+  # openai: 使用 X-Ombre-Session-Id 发送 prompt_cache_key；其他供应商保持空值。
+  prompt_cache: "openai"
+  # prompt_cache_retention: "24h"  # Optional for supported OpenAI models / 支持模型可选
   # Optional multi-upstream mode / 可选多上游模式
   # When upstreams is set, the gateway aggregates all listed models and routes
   # each request by model name to the matching upstream.
@@ -104,6 +109,7 @@ gateway:
   #     base_url: "https://api.deepseek.com/v1"
   #     api_key_env: "OMBRE_GATEWAY_DEEPSEEK_API_KEY"
   #     default_model: "deepseek-chat"
+  #     prompt_cache: ""  # DeepSeek uses automatic prefix cache / DeepSeek 使用自动前缀缓存
   #     models:
   #       - "deepseek-chat"
   #       - "deepseek-reasoner"

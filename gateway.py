@@ -3,6 +3,7 @@ import os
 import secrets
 import json
 import codecs
+import time
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -117,6 +118,8 @@ class GatewayService:
                         "base_url": upstream["base_url"],
                         "default_model": upstream["default_model"],
                         "models": upstream["models"],
+                        "prompt_cache": upstream.get("prompt_cache", ""),
+                        "prompt_cache_retention": upstream.get("prompt_cache_retention", ""),
                         "ready": bool(upstream.get("base_url") and upstream.get("api_key")),
                     }
                     for upstream in self.upstreams
@@ -320,8 +323,21 @@ class GatewayService:
             stable_context,
             dynamic_context,
         )
+        self._apply_prompt_cache_hints(forward_payload, session_id)
         forward_payload["stream"] = payload.get("stream") is True
         return forward_payload, [bucket["id"] for bucket in recalled_buckets]
+
+    def _apply_prompt_cache_hints(self, payload: dict[str, Any], session_id: str) -> None:
+        model = str(payload.get("model") or "").strip()
+        upstream = self._get_upstream_for_model(model)
+        strategy = str(upstream.get("prompt_cache") or "").strip().lower()
+        if strategy != "openai":
+            return
+
+        payload.setdefault("prompt_cache_key", session_id)
+        retention = str(upstream.get("prompt_cache_retention") or "").strip()
+        if retention:
+            payload.setdefault("prompt_cache_retention", retention)
 
     def _authorize(self, auth_header: str) -> JSONResponse | None:
         if not self.gateway_token:
@@ -376,7 +392,8 @@ class GatewayService:
         model = str(payload.get("model") or "").strip()
         upstream = self._get_upstream_for_model(model)
         url = f"{upstream['base_url']}/chat/completions"
-        return await self.http_client.post(
+        started_at = time.perf_counter()
+        response = await self.http_client.post(
             url,
             headers={
                 "Authorization": f"Bearer {upstream['api_key']}",
@@ -384,6 +401,15 @@ class GatewayService:
             },
             json=payload,
         )
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
+            upstream["name"],
+            model,
+            response.status_code,
+            latency_ms,
+        )
+        return response
 
     async def _stream_upstream(
         self,
@@ -403,7 +429,16 @@ class GatewayService:
             },
             json=payload,
         )
+        started_at = time.perf_counter()
         upstream_response = await self.http_client.send(request, stream=True)
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
+            upstream["name"],
+            model,
+            upstream_response.status_code,
+            latency_ms,
+        )
         content_type = upstream_response.headers.get("content-type", "text/event-stream")
 
         if not 200 <= upstream_response.status_code < 300:
@@ -488,24 +523,38 @@ class GatewayService:
         hit = usage.get("prompt_cache_hit_tokens")
         miss = usage.get("prompt_cache_miss_tokens")
         prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+        cache_read_tokens = usage.get("cache_read_input_tokens")
+        cache_creation_tokens = usage.get("cache_creation_input_tokens")
         prompt_details = usage.get("prompt_tokens_details")
         cached_tokens = None
         if isinstance(prompt_details, dict):
             cached_tokens = prompt_details.get("cached_tokens")
 
-        if hit is None and miss is None and cached_tokens is None:
+        if (
+            hit is None
+            and miss is None
+            and cached_tokens is None
+            and cache_read_tokens is None
+            and cache_creation_tokens is None
+        ):
             return
 
         logger.info(
             "Gateway upstream cache usage | session=%s model=%s route=%s "
-            "prompt_tokens=%s prompt_cache_hit_tokens=%s prompt_cache_miss_tokens=%s cached_tokens=%s",
+            "prompt_tokens=%s completion_tokens=%s prompt_cache_hit_tokens=%s "
+            "prompt_cache_miss_tokens=%s cached_tokens=%s cache_read_input_tokens=%s "
+            "cache_creation_input_tokens=%s",
             session_id,
             model,
             route,
             prompt_tokens,
+            completion_tokens,
             hit,
             miss,
             cached_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
         )
 
     def _proxy_response(self, upstream_response: httpx.Response) -> Response:
@@ -811,7 +860,16 @@ class GatewayService:
             },
             json=payload,
         )
+        started_at = time.perf_counter()
         upstream_response = await self.http_client.send(request, stream=True)
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        logger.info(
+            "Gateway upstream response | upstream=%s model=%s status=%s latency_ms=%s",
+            upstream["name"],
+            model,
+            upstream_response.status_code,
+            latency_ms,
+        )
 
         if not 200 <= upstream_response.status_code < 300:
             body = await upstream_response.aread()
@@ -1772,6 +1830,8 @@ class GatewayService:
                 default_model = str(raw.get("default_model") or "").strip()
                 api_key = str(raw.get("api_key") or "").strip()
                 api_key_env = str(raw.get("api_key_env") or "").strip()
+                prompt_cache = str(raw.get("prompt_cache") or "").strip().lower()
+                prompt_cache_retention = str(raw.get("prompt_cache_retention") or "").strip()
                 if api_key_env and not api_key:
                     api_key = os.environ.get(api_key_env, "")
                 upstreams.append(
@@ -1781,6 +1841,8 @@ class GatewayService:
                         "api_key": api_key,
                         "default_model": default_model,
                         "models": self._normalize_model_list(raw.get("models", []), default_model),
+                        "prompt_cache": prompt_cache,
+                        "prompt_cache_retention": prompt_cache_retention,
                     }
                 )
             if upstreams:
@@ -1796,6 +1858,10 @@ class GatewayService:
                     self.gateway_cfg.get("upstream_models", []),
                     self.upstream_default_model,
                 ),
+                "prompt_cache": str(self.gateway_cfg.get("prompt_cache") or "").strip().lower(),
+                "prompt_cache_retention": str(
+                    self.gateway_cfg.get("prompt_cache_retention") or ""
+                ).strip(),
             }
         ]
 
