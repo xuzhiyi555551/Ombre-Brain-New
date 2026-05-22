@@ -57,9 +57,9 @@ def _no_api_config(test_config: dict) -> dict:
 
 
 def test_reflect_prompt_does_not_offer_fixed_chord_template():
-    assert '"chords": "Fmaj9 -> C/E -> Am add9 -> G6sus4"' not in REFLECT_PROMPT
+    assert "Fmaj9 -> C/E -> Am add9 -> G6sus4" not in REFLECT_PROMPT
     assert "不要复用 schema 示例、旧输出或固定模板" in REFLECT_PROMPT
-    assert "不要默认写 Fmaj9 -> C/E -> Am add9 -> G6sus4" in REFLECT_PROMPT
+    assert "不要默认复用最近日印象里常见的四和弦温柔模板" in REFLECT_PROMPT
 
 
 def test_fallback_reflection_anchor_varies_by_day(test_config):
