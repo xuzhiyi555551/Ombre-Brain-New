@@ -816,6 +816,7 @@ async def test_email_query_suppresses_high_importance_hardware_protocol(patch_br
 async def test_context_name_does_not_beat_email_action_intent(patch_breath):
     import server
 
+    embedding_engine = DummyEmbeddingEngine()
     patch_breath(
         [
             _bucket(
@@ -834,6 +835,7 @@ async def test_context_name_does_not_beat_email_action_intent(patch_breath):
             ),
         ],
         search_ids=["P", "M"],
+        embedding_engine=embedding_engine,
         reranker_engine=DummyRerankerEngine(
             enabled=True,
             score_by_text={
@@ -852,6 +854,7 @@ async def test_context_name_does_not_beat_email_action_intent(patch_breath):
 
     assert "QQ邮箱自动收发配置" in result
     assert "小雨沟通偏好" not in result
+    assert embedding_engine.calls[0]["query"] == "发邮件"
 
 
 @pytest.mark.asyncio

@@ -85,6 +85,7 @@ from memory_relevance import (
     facets_for_text,
     memory_relevance_options_from_config,
     query_has_facet,
+    recall_search_query,
     recall_rank,
     relevance_decision,
     relevance_multiplier,
@@ -2811,10 +2812,11 @@ async def breath(
     domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
+    search_query = recall_search_query(query, _recall_relevance_options())
 
     try:
         matches = await bucket_mgr.search(
-            query,
+            search_query,
             limit=max(max_results, 20),
             domain_filter=domain_filter,
             query_valence=q_valence,
@@ -2839,7 +2841,7 @@ async def breath(
     matched_ids = {b["id"] for b in matches}
     try:
         vector_results = await embedding_engine.search_similar(
-            query,
+            search_query,
             top_k=int(recall_thresholds["semantic_top_k"]),
         )
         for bucket_id, sim_score in vector_results:
@@ -2873,7 +2875,7 @@ async def breath(
     _, grouped_moments, _ = await _refresh_moment_graph(all_buckets)
     bucket_boosts = seed_scores_for_buckets(matches)
     moment_candidates = memory_moment_store.search_moments(
-        query,
+        search_query,
         limit=max(max_results, 20),
         bucket_boosts=bucket_boosts,
     )

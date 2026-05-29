@@ -4,6 +4,7 @@ from memory_relevance import (
     facets_for_node,
     facets_for_text,
     memory_relevance_options_from_config,
+    recall_search_query,
     relevance_decision,
 )
 
@@ -109,6 +110,8 @@ def test_context_name_does_not_override_action_intent():
     )
 
     assert content_terms_for_query("小雨 发邮件", options) == ["发邮件"]
+    assert recall_search_query("小雨 发邮件", options) == "发邮件"
+    assert recall_search_query("小雨 蓝色", options) == "小雨 蓝色"
 
     missing_action = relevance_decision(
         "小雨 发邮件",

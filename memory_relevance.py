@@ -343,6 +343,21 @@ def content_terms_for_query(
     return content_terms or terms
 
 
+def recall_search_query(
+    query: str,
+    options: MemoryRelevanceOptions | None = None,
+) -> str:
+    options = options or memory_relevance_options_from_config()
+    query_active = active_facets(facets_for_text(query, options))
+    if "communication_action" not in query_active:
+        return str(query or "")
+    terms = content_terms_for_query(query, options)
+    original_terms = _query_terms(query)
+    if terms and terms != original_terms:
+        return " ".join(terms)
+    return str(query or "")
+
+
 def relevance_decision(
     query: str,
     node: dict,
