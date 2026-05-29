@@ -43,6 +43,14 @@ WORKSPACE_ATTACHMENT_RE = re.compile(
     r"<workspace_attachment>[\s\S]*?</workspace_attachment>",
     re.IGNORECASE,
 )
+LEADING_PROXY_SENDER_RE = re.compile(
+    r"^\s*<proxy_sender\b[^>]*/>\s*",
+    re.IGNORECASE,
+)
+LEADING_SYSTEM_PROMPT_RE = re.compile(
+    r"^\s*【系统提示[：:][\s\S]*?】\s*",
+    re.IGNORECASE,
+)
 EXTERNAL_CONTEXT_BLOCK_TITLES = {
     "当前时间",
     "当前电量",
@@ -1645,7 +1653,17 @@ class GatewayService:
         cleaned = WORKSPACE_ATTACHMENT_RE.sub("", str(text or ""))
         cleaned = EXTERNAL_CONTEXT_ATTACHMENT_RE.sub("", cleaned)
         cleaned = SELF_CLOSING_ATTACHMENT_RE.sub("", cleaned)
+        cleaned = self._strip_leading_auto_context_markers(cleaned)
         return self._strip_external_context_blocks(cleaned)
+
+    def _strip_leading_auto_context_markers(self, text: str) -> str:
+        cleaned = str(text or "")
+        while True:
+            previous = cleaned
+            cleaned = LEADING_PROXY_SENDER_RE.sub("", cleaned, count=1)
+            cleaned = LEADING_SYSTEM_PROMPT_RE.sub("", cleaned, count=1)
+            if cleaned == previous:
+                return cleaned
 
     def _strip_external_context_blocks(self, text: str) -> str:
         kept: list[str] = []

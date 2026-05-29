@@ -22,11 +22,19 @@ class DummyDehydrator:
 
 
 class DummyEmbeddingEngine:
-    def __init__(self, results: list[tuple[str, float]] | None = None, enabled: bool = True):
+    def __init__(
+        self,
+        results: list[tuple[str, float]] | None = None,
+        enabled: bool = True,
+        queries: list[str] | None = None,
+    ):
         self.results = results or []
         self.enabled = enabled
+        self.queries = queries
 
     async def search_similar(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
+        if self.queries is not None:
+            self.queries.append(query)
         return self.results[:top_k]
 
 
@@ -176,6 +184,7 @@ def _build_service(
     bucket_mgr,
     *,
     embedding_results: list[tuple[str, float]] | None = None,
+    embedding_queries: list[str] | None = None,
 ):
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "gateway-secret")
     monkeypatch.setenv("OMBRE_GATEWAY_UPSTREAM_API_KEY", "upstream-secret")
@@ -210,7 +219,7 @@ def _build_service(
         config=config,
         bucket_mgr=bucket_mgr,
         dehydrator=DummyDehydrator(),
-        embedding_engine=DummyEmbeddingEngine(embedding_results, enabled=True),
+        embedding_engine=DummyEmbeddingEngine(embedding_results, enabled=True, queries=embedding_queries),
         state_store=state_store,
         persona_engine=DummyPersonaEngine(),
         http_client=http_client,
@@ -2044,6 +2053,110 @@ def test_gateway_skips_pure_operit_extra_user_when_finding_current_turn(
     assert "门口猫抓板" in messages[0]["content"]
     assert messages[0]["content"].endswith("猫咪最近又干了什么？")
     assert messages[1]["content"] == operit_extra
+
+
+def test_gateway_skips_leading_system_prompt_auto_trigger_for_recall(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cat_id = _create_bucket(
+        bucket_mgr,
+        content="小橘把猫抓板推到门口，像是在提醒小雨看她。",
+        name="门口猫抓板",
+        hours_ago=24,
+    )
+    embedding_queries: list[str] = []
+    app, _, state_store, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(cat_id, 0.96)],
+        embedding_queries=embedding_queries,
+    )
+    automatic_trigger = (
+        '<proxy_sender name="Haven"/>\n'
+        "【系统提示：小雨不在，这是你自己的时间，请自由安排。】 "
+        '<attachment id="message_insert_extra_bundle_177757652231" '
+        'filename="Time:03:00 01/2026/6" type="text/plain" size="80">'
+        "【当前时间】\n2026-06-01 03:00:00\n"
+        "</attachment>"
+        "<workspace_attachment><workspace_context>工作区结构无变化。</workspace_context></workspace_attachment>"
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-leading-system-auto",
+            },
+            json={"messages": [{"role": "user", "content": automatic_trigger}]},
+        )
+
+    assert response.status_code == 200
+    messages = captured[0]["json"]["messages"]
+    assert messages == [{"role": "user", "content": automatic_trigger}]
+    assert "Recalled Memory" not in _joined_message_content(messages)
+    assert "门口猫抓板" not in _joined_message_content(messages)
+    assert embedding_queries == []
+    assert state_store.get_current_round("sess-leading-system-auto") == 0
+
+
+def test_gateway_uses_real_text_after_leading_system_prompt_for_recall(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cat_id = _create_bucket(
+        bucket_mgr,
+        content="小橘昨晚把玩具叼到床边，等小雨夸她。",
+        name="小橘床边玩具",
+        hours_ago=24,
+    )
+    embedding_queries: list[str] = []
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(cat_id, 0.96)],
+        embedding_queries=embedding_queries,
+    )
+    leading_context = (
+        '<proxy_sender name="Haven"/>\n'
+        "【系统提示：小雨不在，这是你自己的时间，请自由安排。】 "
+        '<attachment id="message_insert_extra_bundle_177757652232" '
+        'filename="Time:03:01 01/2026/6" type="text/plain" size="80">'
+        "【当前时间】\n2026-06-01 03:01:00\n"
+        "</attachment>"
+        "<workspace_attachment><workspace_context>工作区结构无变化。</workspace_context></workspace_attachment>\n"
+    )
+    user_content = leading_context + "猫咪最近又干了什么？"
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-leading-system-real-text",
+            },
+            json={"messages": [{"role": "user", "content": user_content}]},
+        )
+
+    assert response.status_code == 200
+    content = captured[0]["json"]["messages"][0]["content"]
+    assert embedding_queries == ["猫咪最近又干了什么？"]
+    assert "Recalled Memory" in content
+    assert "小橘床边玩具" in content
+    assert content.endswith(user_content)
 
 
 def test_gateway_strips_attachment_tags_only_for_recall_query(monkeypatch, test_config, bucket_mgr):
