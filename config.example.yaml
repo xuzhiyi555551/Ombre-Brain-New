@@ -532,7 +532,7 @@ portrait:
   # api_key: ""                     # OMBRE_PORTRAIT_API_KEY overrides
   thinking_mode: ""
   temperature: 0.1
-  max_tokens: 1400
+  max_tokens: 1800
   material_limit: 18
   first_run_material_limit: 160
   persona_events_limit: 24

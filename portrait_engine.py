@@ -135,7 +135,7 @@ class DailyPortraitMaintainer:
             or ""
         ).strip()
         self.temperature = float(cfg.get("temperature", reflection_cfg.get("temperature", 0.1)))
-        self.max_tokens = int(cfg.get("max_tokens", 1400))
+        self.max_tokens = int(cfg.get("max_tokens", 1800))
         self.state_path = self._state_path(cfg.get("state_path", ""))
         self.client = None
         if self.enabled and self.api_key and self.base_url:
@@ -372,25 +372,28 @@ class DailyPortraitMaintainer:
 
     def _fallback_patch(self, materials: dict, *, initial: bool) -> dict:
         add_recent = []
+        move_to_staging = []
         for bucket in materials.get("buckets", [])[:8]:
             scope = self._fallback_scope(bucket)
             text = self._clip(bucket.get("text", ""), 180)
             bucket_id = str(bucket.get("bucket_id") or "")
             if not scope or not text or not bucket_id:
                 continue
-            add_recent.append(
-                {
-                    "scope": scope,
-                    "text": text,
-                    "evidence": [{"bucket_id": bucket_id}],
-                    "confidence": float(bucket.get("confidence") or 0.55),
-                }
-            )
+            row = {
+                "scope": scope,
+                "text": text,
+                "evidence": [{"bucket_id": bucket_id}],
+                "confidence": float(bucket.get("confidence") or 0.55),
+            }
+            if initial:
+                move_to_staging.append(row)
+            else:
+                add_recent.append(row)
         daily_summary = "；".join(self._clip(item.get("name") or item.get("text"), 24) for item in materials.get("buckets", [])[:3] if item.get("name") or item.get("text"))
         return {
             "daily_summary": daily_summary,
             "add_recent": add_recent,
-            "move_to_staging": [],
+            "move_to_staging": move_to_staging,
             "rewrite_mid_term": [],
             "stable_candidate": [],
             "profile_fact_candidate": [],
@@ -858,8 +861,10 @@ class DailyPortraitMaintainer:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             logger.warning("Portrait JSON parse failed: %s", str(raw)[:200])
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
+            raise ValueError("portrait_json_parse_failed")
+        if not isinstance(parsed, dict):
+            raise ValueError("portrait_json_not_object")
+        return parsed
 
     def _normalize_evidence(
         self,
