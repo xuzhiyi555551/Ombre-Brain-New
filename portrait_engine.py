@@ -797,7 +797,13 @@ class DailyPortraitMaintainer:
         reserved_old_days = max(0, len(date_keys) - 1)
         for day_index, date_key in enumerate(date_keys):
             rows = by_date[date_key]
-            rows.sort(key=lambda item: str(item[1].get("updated_at") or ""), reverse=True)
+            rows.sort(
+                key=lambda item: (
+                    self._recent_continuity_scope_priority(item[0]),
+                    str(item[1].get("updated_at") or ""),
+                ),
+                reverse=True,
+            )
             day_limit = max(1, max_items - reserved_old_days) if day_index == 0 else 1
             char_limit = 150 if day_index == 0 else 90
             for scope, row in rows[:day_limit]:
@@ -813,6 +819,15 @@ class DailyPortraitMaintainer:
             if emitted >= max_items:
                 break
         return "\n".join(dict.fromkeys(line for line in lines if line.strip()))
+
+    @staticmethod
+    def _recent_continuity_scope_priority(scope: str) -> int:
+        return {
+            "summary": 50,
+            "relationship": 40,
+            "user": 30,
+            "persona": 20,
+        }.get(str(scope or ""), 10)
 
     def _row_source_date(self, row: dict) -> str:
         for value in row.get("source_dates", []) or []:

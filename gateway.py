@@ -1033,6 +1033,7 @@ class GatewayService:
         current_user_query = self._extract_current_turn_user_query(messages)
         is_new_user_turn = bool(current_user_query)
         has_handoff_context = self._messages_contain_handoff_context(messages)
+        is_handoff_trigger_query = self._query_is_handoff_trigger(current_user_query)
 
         persona_block = ""
         core_memory = ""
@@ -1057,6 +1058,7 @@ class GatewayService:
         targeted_memory_detail = ""
         targeted_memory_detail_debug: dict[str, Any] = self._targeted_memory_detail_debug_base()
         memory_detail_recall_instruction = ""
+        handoff_tool_hint = ""
         dream_context = ""
         dream_context_status: dict[str, Any] = {"status": "skipped", "reason": "not_current_user_turn"}
         diffused_moment_debug: list[dict[str, Any]] = []
@@ -1066,10 +1068,18 @@ class GatewayService:
         query_planner_debug: dict[str, Any] = self._query_planner_debug_base(current_user_query)
 
         if is_new_user_turn:
-            skip_broad_dynamic_recall = self._query_should_skip_broad_for_targeted_memory_detail(
+            skip_for_targeted_detail = self._query_should_skip_broad_for_targeted_memory_detail(
                 current_user_query,
                 session_id,
             )
+            skip_broad_dynamic_recall = skip_for_targeted_detail or is_handoff_trigger_query
+            if is_handoff_trigger_query:
+                query_planner_debug["skip_reason"] = "handoff_trigger"
+                handoff_tool_hint = (
+                    "New-window signal: call the memory tool as breath(is_session_start=True) "
+                    "or breath(mode=\"handoff\") before replying. Do not call breath(query=\"新窗口\") "
+                    "for this literal signal, and do not write/hold it unless the user explicitly asks."
+                )
             if self.persona_engine.enabled and self._should_inject_interval(
                 session_id,
                 self.current_inner_state_interval_rounds,
@@ -1081,14 +1091,21 @@ class GatewayService:
             if self.persona_engine.enabled and persona_state is None:
                 persona_state = self._get_persona_state_for_context_mode(session_id)
             context_mode = self._classify_context_mode(current_user_query, persona_state)
-            if self._should_inject_interval(session_id, self.core_memory_interval_rounds):
+            if not is_handoff_trigger_query and self._should_inject_interval(
+                session_id,
+                self.core_memory_interval_rounds,
+            ):
                 core_memory = await self._build_core_memory_block(all_buckets)
-            portrait_memory, portrait_memory_debug = self._build_portrait_memory_block(all_buckets)
+            if is_handoff_trigger_query:
+                portrait_memory_debug["skip_reason"] = "handoff_trigger"
+            else:
+                portrait_memory, portrait_memory_debug = self._build_portrait_memory_block(all_buckets)
             if self.recalled_budget > 0 or self.related_memory_budget > 0:
                 if skip_broad_dynamic_recall:
                     logger.info(
-                        "Gateway broad dynamic recall skipped | session=%s reason=targeted_memory_detail_query",
+                        "Gateway broad dynamic recall skipped | session=%s reason=%s",
                         session_id,
+                        "handoff_trigger" if is_handoff_trigger_query else "targeted_memory_detail_query",
                     )
                     suppressed_moments = []
                     suppressed_buckets = []
@@ -1194,7 +1211,8 @@ class GatewayService:
                 current_diffused_moment_ids=current_diffused_moment_ids,
                 recalled_memory=recalled_memory,
             )
-            if self.memory_detail_recall_enabled and (
+            can_retry_memory_detail = payload.get("stream") is not True
+            if self.memory_detail_recall_enabled and can_retry_memory_detail and (
                 recalled_memory.strip()
                 or related_memory.strip()
                 or favorite_memory.strip()
@@ -1212,7 +1230,7 @@ class GatewayService:
                 session_id,
                 current_user_query,
                 has_reliable_dynamic_context=reliable_dynamic_context,
-                has_handoff_context=has_handoff_context,
+                has_handoff_context=has_handoff_context or is_handoff_trigger_query,
             ):
                 explicit_recent_query = self._query_requests_recent_context(current_user_query)
                 recent_context = await self._build_recent_context_block(
@@ -1264,6 +1282,7 @@ class GatewayService:
             targeted_memory_detail=targeted_memory_detail,
             dream_context=dream_context,
             memory_detail_recall_instruction=memory_detail_recall_instruction,
+            handoff_tool_hint=handoff_tool_hint,
             context_mode=context_mode,
         )
 
@@ -3142,6 +3161,22 @@ class GatewayService:
             if "Handoff Context" in text and "Use this compact private block" in text:
                 return True
         return False
+
+    @staticmethod
+    def _query_is_handoff_trigger(query_text: str) -> bool:
+        compact = re.sub(r"[\s!！?？。.,，、:：;；~～…_\-]+", "", str(query_text or "").strip().lower())
+        return compact in {
+            "新窗口",
+            "开新窗",
+            "换窗",
+            "醒来",
+            "醒过来",
+            "新窗口醒来",
+            "新窗醒来",
+            "handoff",
+            "newwindow",
+            "sessionstart",
+        }
 
     def _coerce_message_text(self, content: Any) -> str:
         if isinstance(content, str):
@@ -6244,6 +6279,7 @@ class GatewayService:
         targeted_memory_detail: str = "",
         dream_context: str = "",
         memory_detail_recall_instruction: str = "",
+        handoff_tool_hint: str = "",
         context_mode: str = "",
         date_persona_trace: str = "",
     ) -> tuple[str, str]:
@@ -6274,6 +6310,7 @@ class GatewayService:
                 targeted_memory_detail,
                 related_memory,
                 memory_detail_recall_instruction,
+                handoff_tool_hint,
                 dream_context,
                 context_mode,
             ]
@@ -6298,6 +6335,7 @@ class GatewayService:
             add_section("Targeted Memory Detail", targeted_memory_detail)
             add_section("Diffused Memory", related_memory)
             add_section("Memory Detail Request", memory_detail_recall_instruction)
+            add_section("New Window Handoff Hint", handoff_tool_hint)
             if persona_block.strip():
                 dynamic_sections.extend(["", persona_block])
             add_section("Relationship Weather", relationship_weather)

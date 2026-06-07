@@ -16,7 +16,7 @@
 1. breath(query="", max_results=20, domain="", include_related=true, is_session_start=false, retrieval_mode="graph", mode="", session_id="")
    只读读取/召回记忆。
    当用户说“还记得吗”“之前/上次/那个时候”，提到具体人名、项目、偏好、边界、暗号、关系状态，或问题跨窗口、跨天、跨项目时，立即调用 breath，不要等用户说“查记忆”。
-   新窗口第一次读取记忆时，调用 breath(is_session_start=true)。当前版本会把无 query/domain 的 is_session_start 直接当作 handoff：只恢复 Persona、用户画像、关系画像、近期连续性和极少量必要锚点，不要在新窗口开头主动拉一大堆普通动态记忆。支持新参数的客户端也可以显式传 breath(mode="handoff")。
+   新窗口第一次读取记忆时，调用 breath(is_session_start=true)。用户只说“新窗口”“醒来”“换窗”这类开窗信号时，不要传 query="新窗口"；直接用 is_session_start=true 或 mode="handoff"。当前版本会把无 query/domain 的 is_session_start 直接当作 handoff：只恢复 Persona、用户画像、关系画像、近期连续性和极少量必要锚点，不要在新窗口开头主动拉一大堆普通动态记忆。支持新参数的客户端也可以显式传 breath(mode="handoff")。
    query 用用户刚提到的核心实体、原句或情绪；空 query 只用于自然浮现。
    retrieval_mode 默认用 "graph"；只有在调试或用户明确想对照 main 那种整桶召回味道时，才传 retrieval_mode="bucket"。bucket 模式不走 moment graph，也不会返回联想浮现。
    domain="feel" 读取关系天气、感受、亲密状态；domain="whisper" 读取无源悄悄话。

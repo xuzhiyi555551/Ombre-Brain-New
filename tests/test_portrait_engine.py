@@ -430,6 +430,58 @@ def test_handoff_recent_continuity_sorts_equal_timestamps_without_dict_compare(t
     assert "关系画像要优先于旧记忆堆" in sections["recent_continuity"]
 
 
+def test_recent_continuity_prioritizes_personal_scopes(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    cfg = {
+        **test_config,
+        "portrait": {
+            "enabled": True,
+            "state_path": str(state_path),
+            "recent_continuity_days": 3,
+        },
+    }
+    engine = DailyPortraitMaintainer(cfg)
+    state = {
+        "daily_summaries": {},
+        "portrait": {
+            "persona": {
+                "recent_buffer": [
+                    {
+                        "text": "Haven最近在调试技术注入。",
+                        "source_date": "2026-06-07",
+                        "updated_at": "2026-06-07T12:00:00+08:00",
+                    }
+                ]
+            },
+            "user": {
+                "recent_buffer": [
+                    {
+                        "text": "小雨最近在观察新窗口能不能自然醒来。",
+                        "source_date": "2026-06-07",
+                        "updated_at": "2026-06-07T11:00:00+08:00",
+                    }
+                ]
+            },
+            "relationship": {
+                "recent_buffer": [
+                    {
+                        "text": "小雨和Haven最近在确认换窗后的连续感。",
+                        "source_date": "2026-06-07",
+                        "updated_at": "2026-06-07T10:00:00+08:00",
+                    }
+                ]
+            },
+        },
+    }
+
+    continuity = engine._format_recent_continuity(state, max_items=3)
+    lines = continuity.splitlines()
+
+    assert lines[0].startswith("- 2026-06-07 / relationship:")
+    assert lines[1].startswith("- 2026-06-07 / user:")
+    assert lines[2].startswith("- 2026-06-07 / persona:")
+
+
 def test_load_state_drops_initial_run_daily_summary(tmp_path, test_config):
     state_path = tmp_path / "state" / "portrait_state.json"
     engine = DailyPortraitMaintainer(

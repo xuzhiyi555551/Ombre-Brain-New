@@ -4206,6 +4206,58 @@ def test_gateway_handoff_allows_explicit_recent_context(
     assert debug["recent_context_reason"] == "explicit_recent_query"
 
 
+def test_gateway_new_window_trigger_skips_broad_recall_and_hints_handoff(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=420,
+        inject_total_budget=1800,
+        current_inner_state_interval_rounds=0,
+        relationship_weather_interval_rounds=0,
+        favorite_memory_interval_rounds=0,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="窗口切换约定：新窗口要先读 handoff，不要把普通窗口切换记忆当作事件回答。",
+        name="窗口切换约定",
+        hours_ago=1,
+        importance=10,
+        domain=["memory"],
+    )
+    embedding_queries: list[str] = []
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.98)],
+        embedding_queries=embedding_queries,
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "新窗口!"}]},
+            "sess-new-window-trigger",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == []
+    assert embedding_queries == []
+    assert "Recalled Memory" not in injected
+    assert "Diffused Memory" not in injected
+    assert "窗口切换约定" not in injected
+    assert "New Window Handoff Hint" in injected
+    assert debug["query_planner_debug"]["skip_reason"] == "handoff_trigger"
+    assert debug["injected_bucket_ids"] == []
+
+
 def test_gateway_recent_context_cooldown_does_not_block_reliable_recall(
     monkeypatch,
     test_config,
@@ -4823,6 +4875,52 @@ def test_gateway_memory_detail_recall_retries_with_allowed_bucket_id(
     assert detail_debug["triggered"] is True
     assert detail_debug["retried"] is True
     assert detail_debug["accepted_ids"] == [target_id]
+
+
+def test_gateway_streaming_does_not_inject_memory_detail_request(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="妈妈电话后小雨心里乱了一下，细节不该用可见 marker 请求。",
+        name="妈妈电话细节",
+        hours_ago=24,
+        importance=9,
+        domain=["生活"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            retrieval_mode="bucket",
+            memory_detail_recall_enabled=True,
+            recalled_memory_budget=180,
+            related_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+    )
+
+    payload, _, debug = _run(
+        service.prepare_payload(
+            {
+                "stream": True,
+                "messages": [{"role": "user", "content": "妈妈电话后来怎么样"}],
+            },
+            "sess-memory-detail-stream",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert "Recalled Memory" in injected
+    assert "Memory Detail Request" not in injected
+    assert "[memory_detail" not in injected
+    assert debug["memory_detail_recall_debug"]["triggered"] is False
 
 
 def test_gateway_memory_detail_recall_rejects_guessed_bucket_id(

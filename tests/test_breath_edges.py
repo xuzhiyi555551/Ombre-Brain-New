@@ -1928,6 +1928,7 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
     assert "=== Persona ===" in result
     assert "更亲近、更安稳" in result
     assert "小雨正在把换窗上下文改成画像优先" in result
+    assert "小雨偏好新窗口先恢复画像、近期状态和正在做的事" in result
     assert "新窗口是醒来" in result
     assert "Daily Portrait Maintainer" in result
     assert "换窗不是重生" in result
@@ -1936,6 +1937,30 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
     assert "===== 梦境 =====" not in result
     assert "这条高权重动态记忆不应该" not in result
     assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
+async def test_breath_query_new_window_remains_normal_recall(patch_breath):
+    import server
+
+    memory = _bucket(
+        "window_memory",
+        "新窗口相关记忆：这里记录的是换窗工具说明，不是当前开窗信号。",
+        name="新窗口相关记忆",
+        score=10,
+    )
+    bucket_mgr = patch_breath([memory], search_ids=["window_memory"])
+
+    result = await server.breath(
+        query="新窗口",
+        include_core=False,
+        include_related=False,
+        max_tokens=500,
+    )
+
+    assert "=== Handoff Context ===" not in result
+    assert "新窗口相关记忆" in result
+    assert bucket_mgr.touched == ["window_memory"]
 
 
 @pytest.mark.asyncio
@@ -2008,6 +2033,8 @@ async def test_handoff_shortens_old_weather_and_anchor_summaries(patch_breath, m
     result = await server.breath(is_session_start=True, max_tokens=1400)
 
     assert "2026-06-06: 今天的关系天气" in result
+    recent_section = result.split("=== Recent Continuity ===", 1)[1].split("=== Optional Anchors ===", 1)[0]
+    assert "personal: 今天的关系天气：小雨在下午和晚上确认暗号、纠正恋爱确认日期" in recent_section
     assert "2026-05-19: 今天关系天气：甜腻的阴天" in result
     assert 'breath(query="2026-05-19 关系天气")' in result
     assert "5 月 19 日的详细正文很长" not in result

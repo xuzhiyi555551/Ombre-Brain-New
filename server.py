@@ -937,8 +937,11 @@ async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", de
         portrait_sections = {}
 
     user_portrait = str(portrait_sections.get("user") or "").strip()
-    if not user_portrait:
-        user_portrait = _format_handoff_profile_facts(all_buckets, limit=6)
+    profile_facts = _format_handoff_profile_facts(all_buckets, limit=4)
+    if user_portrait and profile_facts:
+        user_portrait = "\n".join([user_portrait, "Profile Facts:", profile_facts])
+    elif not user_portrait:
+        user_portrait = profile_facts
 
     relationship_portrait = str(portrait_sections.get("relationship") or "").strip()
     relationship_weather = _format_handoff_relationship_weather(all_buckets)
@@ -952,7 +955,11 @@ async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", de
         for part in [persona_block, str(portrait_sections.get("persona") or "").strip()]
         if part.strip()
     )
-    recent_continuity = str(portrait_sections.get("recent_continuity") or "").strip()
+    recent_continuity = _merge_handoff_recent_continuity(
+        _format_handoff_personal_recent_continuity(all_buckets, limit=3),
+        str(portrait_sections.get("recent_continuity") or "").strip(),
+        max_lines=5,
+    )
     if not recent_continuity:
         recent_continuity = _format_handoff_recent_continuity(all_buckets, limit=3)
     anchors = _format_handoff_anchors(all_buckets, limit=2)
@@ -1097,6 +1104,44 @@ def _format_handoff_recent_continuity(all_buckets: list[dict], limit: int = 3) -
         created = str(meta.get("created") or "")[:10]
         text = _clip_text(bucket.get("content", ""), 160)
         lines.append(f"- [{created}] [bucket_id:{bucket.get('id', '')}] {name}: {text}")
+    return "\n".join(lines)
+
+
+def _format_handoff_personal_recent_continuity(all_buckets: list[dict], limit: int = 3) -> str:
+    rows = []
+    recent_dates = _handoff_recent_date_keys()
+    for bucket in all_buckets:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        tags = {str(tag) for tag in meta.get("tags", []) or []}
+        if not ({"relationship_weather", "daily_impression"} & tags):
+            continue
+        date_key = _bucket_handoff_date(bucket)
+        if date_key and date_key not in recent_dates:
+            continue
+        text = _handoff_clean_summary_text(bucket.get("content", ""))
+        if not text:
+            continue
+        rows.append((date_key, str(meta.get("updated_at") or meta.get("created") or ""), text))
+    rows.sort(key=lambda item: (item[0] or "", item[1]), reverse=True)
+    lines = []
+    for date_key, _updated, text in rows[: max(0, limit)]:
+        label = f"[{date_key}] " if date_key else ""
+        lines.append(f"- {label}personal: {_clip_text(text, 190)}")
+    return "\n".join(lines)
+
+
+def _merge_handoff_recent_continuity(*blocks: str, max_lines: int = 5) -> str:
+    lines = []
+    seen = set()
+    for block in blocks:
+        for line in str(block or "").splitlines():
+            line = line.strip()
+            if not line or line in seen:
+                continue
+            seen.add(line)
+            lines.append(line)
+            if len(lines) >= max_lines:
+                return "\n".join(lines)
     return "\n".join(lines)
 
 
