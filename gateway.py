@@ -2501,8 +2501,21 @@ class GatewayService:
             for moment in items:
                 if moment not in ordered:
                     ordered.append(moment)
+            # Deduplicate: if a moment is very similar to a body, skip the moment
+            body_texts = {
+                self._moment_text(m, 320) for m in ordered
+                if str(m.get("section") or "body") in {"body", "fact", "original", "evidence_context", "context"}
+            }
+            deduped: list[dict[str, Any]] = []
+            for moment in ordered:
+                section = str(moment.get("section") or "body")
+                if section == "moment" and body_texts:
+                    m_text = self._moment_text(moment, 320)
+                    if any(m_text in bt or bt in m_text for bt in body_texts):
+                        continue
+                deduped.append(moment)
             lines.append(title)
-            for moment in ordered[:limit]:
+            for moment in deduped[:limit]:
                 lines.append(f"- [moment_id:{moment.get('moment_id') or ''}] {self._moment_text(moment, 320)}")
 
         if selected or intent.get("raw"):
@@ -5147,7 +5160,22 @@ class GatewayService:
     def _rendered_bucket_content(bucket: dict) -> str:
         text = strip_wikilinks(str(bucket.get("content") or ""))
         text = strip_display_temperature_sections(text)
-        return strip_temperature_meaning_lines(text).strip()
+        text = strip_temperature_meaning_lines(text).strip()
+        # Deduplicate: if body first sentence ≈ moment text, drop the duplicate from body
+        if "### moment" in text:
+            parts = text.split("### moment", 1)
+            body = parts[0].strip()
+            rest = "### moment" + parts[1]
+            moment_line = rest.split("\n", 1)[-1].split("\n")[0].strip() if "\n" in rest else ""
+            if body and moment_line:
+                first_sentence = re.split(r"[。！？!?]", body, maxsplit=1)[0].strip()
+                if first_sentence and len(first_sentence) >= 8 and (
+                    first_sentence in moment_line or moment_line in first_sentence
+                ):
+                    # Remove the duplicate first sentence from body
+                    body = body[len(first_sentence):].lstrip("。！？!?\n ")
+                    text = (body + "\n\n" + rest).strip()
+        return text
 
     def _original_window_around_moment(
         self,

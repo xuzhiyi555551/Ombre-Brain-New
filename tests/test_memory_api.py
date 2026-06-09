@@ -548,7 +548,7 @@ async def test_create_memory_api_normalizes_affect_anchor_sections(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_create_memory_api_wraps_unheaded_body_as_moment(monkeypatch, bucket_mgr):
+async def test_create_memory_api_preserves_unheaded_body_without_auto_moment(monkeypatch, bucket_mgr):
     import server
 
     monkeypatch.setenv("OMBRE_GATEWAY_TOKEN", "secret")
@@ -569,9 +569,11 @@ async def test_create_memory_api_wraps_unheaded_body_as_moment(monkeypatch, buck
     bucket = await bucket_mgr.get("unheaded_write_api")
 
     assert response.status_code == 200
-    assert bucket["content"].startswith("### moment\n小雨问失忆的Haven是否记得生日")
+    assert bucket["content"].startswith("小雨问失忆的Haven是否记得生日")
+    assert "### moment" not in bucket["content"]
     assert "\n\n### reflection\n\n这条记忆用来提醒 Haven" in bucket["content"]
-    assert "\n\n### affect_anchor\n> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in bucket["content"]
+    assert "### affect_anchor" in bucket["content"]
+    assert "> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in bucket["content"]
 
 
 @pytest.mark.asyncio
@@ -631,7 +633,7 @@ async def test_hold_normalizes_affect_anchor_sections(monkeypatch, bucket_mgr, d
 
 
 @pytest.mark.asyncio
-async def test_hold_wraps_unheaded_body_as_moment(monkeypatch, bucket_mgr, decay_eng):
+async def test_hold_preserves_body_and_appends_generated_moment(monkeypatch, bucket_mgr, decay_eng):
     import server
 
     async def no_related_bucket(*args, **kwargs):
@@ -649,9 +651,12 @@ async def test_hold_wraps_unheaded_body_as_moment(monkeypatch, bucket_mgr, decay
     stored = buckets[0]["content"]
 
     assert result.startswith("新建→")
-    assert stored.startswith("### moment\n小雨问失忆的Haven是否记得生日")
+    assert stored.startswith("小雨问失忆的Haven是否记得生日")
+    assert "\n\n### moment\n小雨问失忆的Haven是否记得生日" in stored
     assert "\n\n### reflection\n\n这条记忆用来提醒 Haven" in stored
-    assert "\n\n### affect_anchor\n> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in stored
+    assert "### affect_anchor" in stored
+    assert "> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in stored
+    assert "###  reflection" not in stored
 
 
 @pytest.mark.asyncio
@@ -1136,7 +1141,7 @@ async def test_grow_normalizes_digest_affect_anchor_sections(monkeypatch, bucket
 
 
 @pytest.mark.asyncio
-async def test_grow_wraps_digest_unheaded_body_as_moment(monkeypatch, bucket_mgr, decay_eng):
+async def test_grow_preserves_body_and_appends_generated_moment(monkeypatch, bucket_mgr, decay_eng):
     import server
 
     async def no_related_bucket(*args, **kwargs):
@@ -1154,9 +1159,12 @@ async def test_grow_wraps_digest_unheaded_body_as_moment(monkeypatch, bucket_mgr
     stored = buckets[0]["content"]
 
     assert "1条|新1合0" in result
-    assert stored.startswith("### moment\n小雨问失忆的Haven是否记得生日")
+    assert stored.startswith("小雨问失忆的Haven是否记得生日")
+    assert "\n\n### moment\n小雨问失忆的Haven是否记得生日" in stored
     assert "\n\n### reflection\n\n这条记忆用来提醒 Haven" in stored
-    assert "\n\n### affect_anchor\n> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in stored
+    assert "### affect_anchor" in stored
+    assert "> Dm9 -> G13sus4 -> Cmaj9 · 60bpm · mp" in stored
+    assert "###  reflection" not in stored
 
 
 @pytest.mark.asyncio

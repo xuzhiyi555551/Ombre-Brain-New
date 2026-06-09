@@ -23,6 +23,8 @@
 - 修改/归档/删除/沉底旧记忆：先 read_bucket，再 trace。
 - 稳定画像事实：先有证据 bucket，再 profile_fact(fact, evidence_bucket_id, ...)。
 - 不确定是否重复：先 breath/read_bucket，再写。
+- 碎碎念、突然的念头可以写 whisper，hold(whisper=True,....)
+- content 分段格式：### moment（事件事实）/ ### original（原话证据）/ ### reflection（理解和回应规则）/ ### followup（后续待办）/ ### affect_anchor（只放和弦温度线，不放事实）。没有的部分不写。
 
 暗房：
 - 未想透、不该给用户看、不该进普通记忆的内在反思：darkroom_enter(note=...)。

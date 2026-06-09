@@ -1340,11 +1340,72 @@ def _normalize_memory_sections_for_write(content: str) -> str:
         return ""
     migration = plan_bucket_migration(
         {"id": "write_preview", "content": raw, "metadata": {"name": "write_preview"}},
-        body_only_moment="wrap",
+        body_only_moment="skip",
     )
     if migration:
         return migration.new_content.strip()
     return raw
+
+
+def _has_memory_section(content: str, section: str) -> bool:
+    target = _normalize_section_heading(section)
+    text = strip_wikilinks(str(content or ""))
+    for match in re.finditer(r"(?m)^\s{0,3}#{2,6}\s+(.+?)\s*$", text):
+        if _normalize_section_heading(match.group(1)) == target:
+            return True
+    return False
+
+
+def _leading_body_text(content: str) -> str:
+    raw = str(content or "").strip()
+    if not raw:
+        return ""
+    match = re.search(r"(?m)^\s{0,3}#{2,6}\s+\S.*$", raw)
+    return (raw[: match.start()] if match else raw).strip()
+
+
+def _fallback_moment_from_body(body_text: str) -> str:
+    text = re.sub(r"\s+", " ", str(body_text or "").strip())
+    if not text:
+        return ""
+    match = re.search(r"^(.{12,60}?[。！？!?])", text)
+    return (match.group(1) if match else text[:40]).strip()
+
+
+def _insert_moment_after_leading_body(content: str, moment: str) -> str:
+    raw = str(content or "").strip()
+    text = str(moment or "").strip()
+    if not raw or not text:
+        return raw
+    moment_block = f"### moment\n{text}"
+    match = re.search(r"(?m)^\s{0,3}#{2,6}\s+\S.*$", raw)
+    if not match:
+        return f"{raw}\n\n{moment_block}"
+    body = raw[: match.start()].strip()
+    rest = raw[match.start():].lstrip()
+    if body:
+        return f"{body}\n\n{moment_block}\n\n{rest}"
+    return f"{moment_block}\n\n{rest}"
+
+
+async def _auto_generate_moment_if_missing(content: str) -> str:
+    raw = str(content or "").strip()
+    if not raw or _has_memory_section(raw, "moment"):
+        return raw
+    body_text = _leading_body_text(raw)
+    if not body_text or len(body_text) < 10:
+        return raw
+
+    generated_moment = ""
+    generator = getattr(dehydrator, "generate_moment", None)
+    if callable(generator):
+        try:
+            generated_moment = await generator(body_text)
+        except Exception as e:
+            logger.warning("Auto moment generation failed / 自动 moment 生成失败: %s", e)
+
+    generated_moment = str(generated_moment or "").strip() or _fallback_moment_from_body(body_text)
+    return _insert_moment_after_leading_body(raw, generated_moment) if generated_moment else raw
 
 
 def _bucket_read_payload(bucket: dict) -> dict:
@@ -6078,7 +6139,7 @@ async def hold(
     arousal: float = -1,
     title: str = "",
 ) -> str:
-    """写一条长期记忆。单个事实/承诺/偏好用 hold；旧记忆的新感受用 comment_bucket；悄悄话用 whisper=True。title 可选，传了就用你给的标题，不传则自动生成。"""
+    """写一条长期记忆。单个事实/承诺/偏好用 hold；旧记忆的新感受用 comment_bucket；悄悄话用 whisper=True。title 可选，传了就用你给的标题，不传则自动生成。content 按需分段：正文 + ### moment + ### original + ### reflection + ### followup + ### affect_anchor（只放和弦温度线），没有的部分不写。"""
     await decay_engine.ensure_started()
 
     # --- Input validation / 输入校验 ---
@@ -6153,6 +6214,8 @@ async def hold(
             "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
             "tags": [], "suggested_name": "",
         }
+
+    content = await _auto_generate_moment_if_missing(content)
 
     domain = analysis["domain"]
     valence = analysis["valence"]
@@ -6293,7 +6356,7 @@ def _looks_like_operit_auto_grow_content(content: str) -> bool:
 
 @mcp.tool()
 async def grow(content: str, auto: bool = False, source: str = "", title: str = "", context: Context | None = None) -> str:
-    """把筛过的长片段拆成少量长期记忆；单条事实优先 hold，旧记忆补感受优先 comment_bucket。title 可选，短内容时传了就用你给的标题。"""
+    """把筛过的长片段拆成少量长期记忆；单条事实优先 hold，旧记忆补感受优先 comment_bucket。title 可选，短内容时传了就用你给的标题。content 按需分段：正文 + ### moment + ### original + ### reflection + ### followup + ### affect_anchor（只放和弦温度线），没有的部分不写。"""
     await decay_engine.ensure_started()
 
     if not content or not content.strip():
@@ -6331,6 +6394,7 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
                 "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
                 "tags": [], "suggested_name": "",
             }
+        content = await _auto_generate_moment_if_missing(content)
         fast_tags = analysis.get("tags", [])
         fast_classification = normalize_write_classification(
             memory_subject=analysis.get("memory_subject", ""),
@@ -6378,6 +6442,7 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
         try:
             item_tags = item.get("tags", [])
             item_content = _normalize_memory_sections_for_write(item.get("content", ""))
+            item_content = await _auto_generate_moment_if_missing(item_content)
             item_classification = normalize_write_classification(
                 memory_subject=item.get("memory_subject", ""),
                 memory_layer=item.get("memory_layer", ""),
