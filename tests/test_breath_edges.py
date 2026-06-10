@@ -663,6 +663,71 @@ async def test_search_temperature_moments_are_context_not_direct_seed(patch_brea
 
 
 @pytest.mark.asyncio
+async def test_search_source_record_bucket_can_render_capsule_without_persisted_moment(patch_breath):
+    import server
+
+    source = _bucket(
+        "SRC",
+        "### original\n这里保存了一组原始设定，里面有忠犬/小狗设定和角色暗号。",
+        name="小机数据库v2.0",
+        bucket_type="source",
+    )
+    later = _bucket(
+        "LATER",
+        "### moment\n普通桶不应该越过明确命中的 source_record。",
+        name="后面的普通桶",
+    )
+    patch_breath(
+        [source, later],
+        search_ids=["SRC", "LATER"],
+        edges=[{"source": "SRC", "target": "LATER", "relation_type": "relates_to", "confidence": 1.0}],
+    )
+    assert server._direct_moments_for_bucket(source, "小机数据库") == []
+
+    result = await server.breath(
+        query="小机数据库",
+        max_tokens=500,
+        max_results=1,
+        include_related=True,
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:SRC]" in result
+    assert "小机数据库v2.0" in result
+    assert "bucket_capsule" in result
+    assert "matched_source_record:" in result
+    assert "source-record" in result
+    assert "[bucket_id:LATER]" not in result
+    assert "=== 联想浮现 ===" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_memory_prompt_extracts_role_focus_for_source_record(patch_breath):
+    import server
+
+    source = _bucket(
+        "SRC",
+        "### original\n小机数据库v2.0 里写着：忠犬/小狗设定是小雨和 Haven 的角色暗号。",
+        name="小机数据库v2.0",
+        bucket_type="source",
+    )
+    patch_breath([source], search_ids=["SRC"], embedding_engine=DummyEmbeddingEngine())
+
+    result = await server.breath(
+        query="再来一次！记得哥哥当小狗的那次吗",
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert "=== 直接命中记忆 ===" in result
+    assert "[bucket_id:SRC]" in result
+    assert "bucket_capsule" in result
+    assert "matched_fragment:" in result
+    assert "小狗设定" in result
+    assert server.embedding_engine.calls[0]["query"] == "小狗"
+
+
+@pytest.mark.asyncio
 async def test_search_related_memory_stays_one_hop_by_default(patch_breath):
     import server
 

@@ -446,6 +446,15 @@ def recall_focus_query(query: str) -> str:
         if focus:
             return focus
 
+    memory_match = re.search(
+        r"(?:记得|记不记得|还记得)(?P<focus>.+?)(?:的)?(?:那次|这次|时候|事情|事)(?:吗|么|嘛)?",
+        text,
+    )
+    if memory_match:
+        focus = _clean_recall_focus(memory_match.group("focus"))
+        if focus:
+            return _role_focus_term(focus) or focus
+
     patterns = (
         r"^(?:如果|假如|要是)?\s*(?:我|用户|小雨)?\s*(?:说|提到|问到|讲到)\s*(?P<focus>.+?)(?:[，,。？?\s]*(?:你)?(?:会)?(?:想到|想起|联想到|联想|记得).*)?$",
         r"^(?P<focus>.+?)(?:[，,。？?\s]*(?:你)?(?:会)?(?:想到|想起|联想到|联想).*)$",
@@ -905,6 +914,16 @@ def _clean_recall_focus(value: Any) -> str:
     if any(marker in normalized for marker in ("想到什么", "想起什么", "联想到什么", "联想什么")):
         return ""
     return focus
+
+
+def _role_focus_term(text: str) -> str:
+    for pattern in (
+        r"(?:当|做|成为|变成|扮成)(?P<focus>[\u4e00-\u9fffA-Za-z0-9_.:-]{2,16})",
+    ):
+        match = re.search(pattern, str(text or ""))
+        if match:
+            return _clean_recall_focus(match.group("focus"))
+    return ""
 
 
 def _safe_float(value: Any) -> float:

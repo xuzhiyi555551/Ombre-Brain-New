@@ -97,12 +97,14 @@ from memory_relevance import (
 )
 from memory_layers import (
     CONTEXT_ONLY_SECTIONS,
+    LAYER_SOURCE_RECORD,
     bucket_layer_debug,
     bucket_runtime_gate_debug,
     can_bucket_be_related_target,
     can_moment_be_direct_seed,
     can_moment_be_recall_context,
     can_moment_be_related_target,
+    infer_bucket_layer,
     moment_layer_debug,
     moment_runtime_gate_debug,
     normalize_write_classification,
@@ -3499,6 +3501,14 @@ async def _format_direct_bucket(
 ) -> str:
     original = _rendered_bucket_content(bucket)
     header = _direct_bucket_header(bucket, moment)
+    if _is_source_record_synthetic_moment(moment):
+        return await _format_source_record_direct_bucket(
+            bucket,
+            moment,
+            header,
+            original,
+            token_budget,
+        )
     original_block = f"{header} bucket_original\n{original}" if original else f"{header} bucket_original"
     if count_tokens_approx(original_block) <= token_budget:
         return original_block
@@ -3526,6 +3536,33 @@ async def _format_direct_bucket(
     return _format_direct_bucket_window(bucket, moment, grouped, token_budget)
 
 
+async def _format_source_record_direct_bucket(
+    bucket: dict,
+    moment: dict,
+    header: str,
+    original: str,
+    token_budget: int,
+) -> str:
+    meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+    matched_label = "matched_fragment" if meta.get("source_record_fragment_seed") else "matched_source_record"
+    matched = _moment_text(moment, 260)
+    try:
+        capsule = await dehydrator.dehydrate_direct_capsule(
+            original or matched,
+            _bucket_metadata_for_dehydration(bucket),
+        )
+    except Exception as e:
+        logger.warning(f"Source record capsule failed / source_record 脱水失败: {e}")
+        capsule = _source_record_capsule_seed_text(bucket) or matched
+    block = f"{header} bucket_capsule\n{capsule}\n{matched_label}: {matched}"
+    if count_tokens_approx(block) <= token_budget:
+        return block
+    compact = f"{header} bucket_capsule\n{_clip_text(capsule, 260)}\n{matched_label}: {matched}"
+    if count_tokens_approx(compact) <= token_budget:
+        return compact
+    return _trim_text_to_token_budget(compact, token_budget)
+
+
 def _direct_bucket_render_debug(
     bucket: dict | None,
     moment: dict | None,
@@ -3542,6 +3579,19 @@ def _direct_bucket_render_debug(
     original_block = f"{header} bucket_original\n{original}" if original else f"{header} bucket_original"
     original_tokens = count_tokens_approx(original_block)
     budget = max(0, int(token_budget or 0))
+    if _is_source_record_synthetic_moment(moment):
+        meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+        return {
+            "mode": mode,
+            "shape": "bucket_capsule",
+            "reason": str(meta.get("source_record_direct_reason") or "source_record_direct"),
+            "token_budget": budget,
+            "original_tokens": original_tokens,
+            "original_fits": False,
+            "high_value": False,
+            "detail_query": False,
+            "wants_capsule": True,
+        }
     high_value = _bucket_is_high_value(bucket)
     detail_query = _query_requests_direct_detail(query_text)
     original_fits = original_tokens <= budget
@@ -3766,6 +3816,161 @@ def _bucket_relevance_node(bucket: dict, score: float = 0.0) -> dict:
             "evidence_spans": meta.get("evidence_spans") or [],
         },
     }
+
+
+def _is_source_record_bucket(bucket: dict | None) -> bool:
+    return isinstance(bucket, dict) and infer_bucket_layer(bucket) == LAYER_SOURCE_RECORD
+
+
+def _source_record_synthetic_moment_for_bucket(
+    bucket: dict,
+    query: str,
+    *,
+    selected_reason: str = "",
+) -> dict | None:
+    if not _is_source_record_bucket(bucket) or is_self_anchor_bucket(bucket):
+        return None
+    bucket_id = str(bucket.get("id") or "")
+    if not bucket_id:
+        return None
+    fragment = _source_record_fragment_for_query(query, bucket)
+    explicit_reason = _source_record_explicit_bucket_match_reason(query, bucket)
+    if not fragment and not explicit_reason:
+        return None
+    fragment_seed = bool(fragment)
+    reason = "source_record_fragment_direct" if fragment_seed else "source_record_explicit_bucket_capsule"
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    text = fragment or _source_record_capsule_seed_text(bucket)
+    return {
+        "moment_id": _source_record_synthetic_moment_id(bucket_id, reason, text),
+        "bucket_id": bucket_id,
+        "section": "source_fragment" if fragment_seed else "source_capsule",
+        "text": text,
+        "ordinal": 0,
+        "source": "source_record_synthetic",
+        "source_id": reason,
+        "score": max(1.0, _score_to_unit(bucket.get("score", 0.0))),
+        "admission_reason": reason,
+        "metadata": {
+            "bucket_name": meta.get("name") or bucket_id,
+            "bucket_type": meta.get("type") or "source",
+            "bucket_tags": list(meta.get("tags") or []),
+            "bucket_domain": list(meta.get("domain") or []),
+            "bucket_importance": meta.get("importance"),
+            "bucket_created": meta.get("created"),
+            "bucket_updated_at": meta.get("updated_at") or meta.get("last_active"),
+            "source_record_direct": True,
+            "source_record_direct_reason": reason,
+            "source_record_match_reason": explicit_reason or selected_reason or "selected_bucket",
+            "source_record_fragment_seed": fragment_seed,
+            "source_record_capsule_only": not fragment_seed,
+        },
+        "_source_record_synthetic": True,
+    }
+
+
+def _source_record_synthetic_moments_for_matches(matches: list[dict], query: str) -> list[dict]:
+    output = []
+    seen = set()
+    for bucket in matches or []:
+        bucket_id = str((bucket or {}).get("id") or "")
+        if not bucket_id or bucket_id in seen:
+            continue
+        moment = _source_record_synthetic_moment_for_bucket(
+            bucket,
+            query,
+            selected_reason="seed_bucket",
+        )
+        if moment:
+            output.append(moment)
+            seen.add(bucket_id)
+    return output
+
+
+def _prepend_source_record_synthetic_moments(
+    moments: list[dict],
+    synthetics: list[dict],
+) -> list[dict]:
+    if not synthetics:
+        return moments
+    source_ids = {str(moment.get("bucket_id") or "") for moment in synthetics}
+    return list(synthetics) + [
+        moment for moment in moments
+        if str(moment.get("bucket_id") or "") not in source_ids
+    ]
+
+
+def _source_record_fragment_for_query(query: str, bucket: dict, *, max_chars: int = 360) -> str:
+    terms = _recall_policy().specific_query_terms(query)
+    if not terms:
+        return ""
+    original = _rendered_bucket_content(bucket)
+    if not original:
+        return ""
+    lowered = original.lower()
+    matches = []
+    for term in terms:
+        needle = str(term or "").strip().lower()
+        if len(needle) < 2:
+            continue
+        index = lowered.find(needle)
+        if index >= 0:
+            matches.append((index, needle))
+    if not matches:
+        return ""
+    index, needle = sorted(matches, key=lambda item: (item[0], -len(item[1])))[0]
+    half = max_chars // 2
+    start = max(0, index - half)
+    end = min(len(original), index + len(needle) + half)
+    fragment = original[start:end].strip()
+    if start > 0:
+        fragment = "..." + fragment
+    if end < len(original):
+        fragment += "..."
+    return fragment
+
+
+def _source_record_explicit_bucket_match_reason(query: str, bucket: dict) -> str:
+    if not query or not isinstance(bucket, dict):
+        return ""
+    bucket_id = str(bucket.get("id") or "")
+    query_text = str(query or "")
+    if bucket_id and bucket_id in query_text:
+        return "explicit_bucket_id"
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    title = str(meta.get("name") or bucket_id or "").strip()
+    title_key = _compact_lookup_key(title)
+    query_key = _compact_lookup_key(query)
+    if title_key and (query_key == title_key or title_key in query_key):
+        return "explicit_bucket_title"
+    for term in _recall_policy().specific_query_terms(query):
+        term_key = _compact_lookup_key(term)
+        if not term_key or len(term_key) < 2:
+            continue
+        if term_key == title_key or (len(term_key) >= 3 and term_key in title_key):
+            return "explicit_bucket_title"
+    return ""
+
+
+def _compact_lookup_key(value: object) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", str(value or "").strip().lower())
+
+
+def _source_record_synthetic_moment_id(bucket_id: str, reason: str, text: str) -> str:
+    digest = hashlib.sha1(f"{bucket_id}\n{reason}\n{text}".encode("utf-8")).hexdigest()[:12]
+    return f"{bucket_id}:source-record:{digest}"
+
+
+def _source_record_capsule_seed_text(bucket: dict) -> str:
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    title = str(meta.get("name") or bucket.get("id") or "").strip()
+    summary = str(meta.get("annotation_summary") or meta.get("summary") or "").strip()
+    return _clip_text(" | ".join(part for part in (title, summary) if part), 260) or title
+
+
+def _is_source_record_synthetic_moment(moment: dict | None) -> bool:
+    meta = moment.get("metadata", {}) if isinstance(moment, dict) and isinstance(moment.get("metadata"), dict) else {}
+    return bool(meta.get("source_record_direct") or (moment or {}).get("_source_record_synthetic"))
 
 
 def _direct_moments_for_bucket(bucket: dict, query: str = "") -> list[dict]:
@@ -4722,13 +4927,47 @@ async def _build_recall_debug_payload(
     )
     explicit_lookup = _query_explicitly_requests_archive_memory(query)
     direct_candidates = _direct_recallable_moments(searched_candidates, explicit_lookup=explicit_lookup)
+    source_record_moments = _source_record_synthetic_moments_for_matches(matches, query)
+    direct_candidates = _prepend_source_record_synthetic_moments(
+        direct_candidates,
+        source_record_moments,
+    )
     pre_gate_candidates = direct_candidates[:max_candidates]
-    gated_candidates = _apply_recall_relevance_gate(query, direct_candidates)
+    source_record_by_id = {
+        str(moment.get("moment_id") or ""): moment
+        for moment in source_record_moments
+        if moment.get("moment_id")
+    }
+    gated_non_source = _apply_recall_relevance_gate(
+        query,
+        [
+            moment for moment in direct_candidates
+            if str(moment.get("moment_id") or "") not in source_record_by_id
+        ],
+    )
+    gated_candidates = _prepend_source_record_synthetic_moments(
+        gated_non_source,
+        source_record_moments,
+    )
     reranked_candidates = await _rerank_breath_moment_candidates(query, gated_candidates)
+    reranked_candidates = _prepend_source_record_synthetic_moments(
+        reranked_candidates,
+        source_record_moments,
+    )
 
     admitted_moments = []
     suppressed_moments = []
     for moment in reranked_candidates:
+        if _is_source_record_synthetic_moment(moment):
+            item = dict(moment)
+            meta = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+            item["_admission_reason"] = str(meta.get("source_record_direct_reason") or "source_record_direct")
+            item["_admission_debug"] = {
+                "source_record_direct_override": True,
+                "fragment_seed": bool(meta.get("source_record_fragment_seed")),
+            }
+            admitted_moments.append(item)
+            continue
         admission = _breath_moment_admission_decision(
             query,
             moment,
@@ -5823,8 +6062,14 @@ async def breath(
             bucket_moments = _direct_moments_for_bucket(bucket, query)
             moment = _representative_moment(bucket_moments)
             if not moment:
+                moment = _source_record_synthetic_moment_for_bucket(
+                    bucket,
+                    query,
+                    selected_reason="seed_bucket",
+                )
+            if not moment:
                 continue
-            grouped = {bucket_id: bucket_moments}
+            grouped = {bucket_id: bucket_moments or [moment]}
             entry = await _format_direct_bucket(
                 bucket,
                 moment,
@@ -5919,14 +6164,48 @@ async def breath(
     )
     explicit_lookup = _query_explicitly_requests_archive_memory(query)
     moment_candidates = _direct_recallable_moments(moment_candidates, explicit_lookup=explicit_lookup)
+    source_record_moments = _source_record_synthetic_moments_for_matches(matches, query)
+    moment_candidates = _prepend_source_record_synthetic_moments(
+        moment_candidates,
+        source_record_moments,
+    )
     pre_gate_moment_candidates = list(moment_candidates)
-    gated_moment_candidates = _apply_recall_relevance_gate(query, moment_candidates)
+    source_record_by_id = {
+        str(moment.get("moment_id") or ""): moment
+        for moment in source_record_moments
+        if moment.get("moment_id")
+    }
+    gated_non_source = _apply_recall_relevance_gate(
+        query,
+        [
+            moment for moment in moment_candidates
+            if str(moment.get("moment_id") or "") not in source_record_by_id
+        ],
+    )
+    gated_moment_candidates = _prepend_source_record_synthetic_moments(
+        gated_non_source,
+        source_record_moments,
+    )
     moment_candidates = gated_moment_candidates
     moment_candidates = await _rerank_breath_moment_candidates(query, moment_candidates)
+    moment_candidates = _prepend_source_record_synthetic_moments(
+        moment_candidates,
+        source_record_moments,
+    )
     reranked_moment_candidates = list(moment_candidates)
     admitted_moments = []
     suppressed_moments = []
     for moment in moment_candidates:
+        if _is_source_record_synthetic_moment(moment):
+            item = dict(moment)
+            meta = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
+            item["_admission_reason"] = str(meta.get("source_record_direct_reason") or "source_record_direct")
+            item["_admission_debug"] = {
+                "source_record_direct_override": True,
+                "fragment_seed": bool(meta.get("source_record_fragment_seed")),
+            }
+            admitted_moments.append(item)
+            continue
         if str(moment.get("bucket_id") or "") in word_map_hint_bucket_ids:
             seed = seed_diagnostics.get(str(moment.get("bucket_id") or ""), {})
             moment["word_map_hint"] = True
@@ -6033,6 +6312,8 @@ async def breath(
                 continue
             bucket = bucket_map.get(bucket_id)
             if not bucket or bucket_id in seen_source_bucket_ids:
+                continue
+            if _is_source_record_bucket(bucket):
                 continue
             related_source_buckets.append(bucket)
             related_source_bucket_ids.append(bucket_id)
