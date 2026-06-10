@@ -195,6 +195,7 @@ def test_dashboard_exposes_portrait_state_panel():
     assert "state.recent_timeline" in html
     assert "state.stable_candidates" in html
     assert "state.profile_fact_candidates" in html
+    assert "renderPortraitScope('persona'" not in html
     assert ".portrait-state-grid" in html
     assert ".portrait-candidate-grid" in html
     assert "loadPortraitState();" in profile_tab_block

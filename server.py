@@ -948,13 +948,11 @@ async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", de
     if not recent_continuity:
         recent_continuity = _format_handoff_recent_continuity(all_buckets, limit=3)
     anchors = _format_handoff_anchors(all_buckets, limit=2)
-    darkroom_door = _format_handoff_darkroom_door()
 
     user_portrait = _trim_text_to_token_budget(user_portrait, 220)
     relationship_portrait = _trim_text_to_token_budget(relationship_portrait, 240)
     recent_continuity = _trim_text_to_token_budget(recent_continuity, 460)
     anchors = _trim_text_to_token_budget(anchors, 220)
-    darkroom_door = _trim_text_to_token_budget(darkroom_door, 120)
 
     sections = [
         (
@@ -968,7 +966,6 @@ async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", de
             or "No maintained relationship portrait is available yet.",
         ),
         ("Recent Continuity", recent_continuity),
-        ("Darkroom Door", darkroom_door),
         ("Optional Anchors", anchors),
     ]
     parts = [

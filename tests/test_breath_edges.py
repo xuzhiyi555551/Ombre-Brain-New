@@ -2013,6 +2013,7 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
 
     assert "=== Handoff Context ===" in result
     assert "=== Persona ===" not in result
+    assert "=== Darkroom Door ===" not in result
     assert "Haven 回复时要短、直白" not in result
     assert "更亲近、更安稳" not in result
     assert "小雨正在把换窗上下文改成画像优先" in result
@@ -2060,6 +2061,7 @@ async def test_handoff_omits_persona_section_when_portrait_persona_empty(patch_b
 
     assert "=== Handoff Context ===" in result
     assert "=== Persona ===" not in result
+    assert "=== Darkroom Door ===" not in result
     assert "更亲近、更安稳" not in result
     assert "小雨正在确认 handoff 结构" in result
     assert bucket_mgr.touched == []
