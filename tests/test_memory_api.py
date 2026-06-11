@@ -3692,6 +3692,67 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
 
 
 @pytest.mark.asyncio
+async def test_config_update_persists_persona_context_disabled(monkeypatch, test_config, tmp_path):
+    import server
+
+    config_path = tmp_path / "config.yaml"
+    runtime_path = tmp_path / "state" / "config.runtime.yaml"
+    runtime_path.parent.mkdir(exist_ok=True)
+    config_path.write_text(
+        "gateway:\n  current_inner_state_interval_rounds: 15\n",
+        encoding="utf-8",
+    )
+    runtime_path.write_text(
+        "gateway:\n  current_inner_state_interval_rounds: 15\n",
+        encoding="utf-8",
+    )
+    cfg = {
+        **test_config,
+        "_runtime_config_path": str(runtime_path),
+        "gateway": {
+            **test_config.get("gateway", {}),
+            "current_inner_state_interval_rounds": 15,
+        },
+    }
+
+    hot_update_calls = []
+
+    async def fake_hot_update(body):
+        hot_update_calls.append(dict(body or {}))
+        return "gateway_hot_reloaded"
+
+    monkeypatch.setenv("OMBRE_CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(server, "config", cfg)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(server, "_hot_update_gateway_config", fake_hot_update)
+
+    response = await server.api_config_update(
+        DummyRequest(
+            {
+                "gateway": {"current_inner_state_interval_rounds": 0},
+                "persist": True,
+            }
+        )
+    )
+    payload = json.loads(response.body)
+    saved_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    runtime_config = yaml.safe_load(runtime_path.read_text(encoding="utf-8"))
+    get_response = await server.api_config_get(DummyRequest())
+    get_payload = json.loads(get_response.body)
+
+    assert response.status_code == 200
+    assert payload["ok"] is True
+    assert "gateway.current_inner_state_interval_rounds" in payload["updated"]
+    assert "runtime_yaml_synced" in payload["updated"]
+    assert "gateway_hot_reloaded" in payload["updated"]
+    assert hot_update_calls[-1]["gateway"]["current_inner_state_interval_rounds"] == 0
+    assert server.config["gateway"]["current_inner_state_interval_rounds"] == 0
+    assert saved_config["gateway"]["current_inner_state_interval_rounds"] == 0
+    assert runtime_config["gateway"]["current_inner_state_interval_rounds"] == 0
+    assert get_payload["gateway"]["current_inner_state_interval_rounds"] == 0
+
+
+@pytest.mark.asyncio
 async def test_config_persist_without_persona_body_preserves_minimal_persona_yaml(
     monkeypatch,
     test_config,

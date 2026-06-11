@@ -341,17 +341,21 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "chain_min_confidence: floatValue('cfg-chain-confidence', 0.72)," in save_block
 
 
-def test_dashboard_config_save_sends_only_changed_sections():
+def test_dashboard_config_save_sends_changed_sections_and_forces_memory_panel():
     html = Path("dashboard.html").read_text(encoding="utf-8")
     load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]
     save_block = html.split("async function saveConfig", 1)[1].split("try {", 1)[0]
 
     assert "let configSnapshot = null;" in html
     assert "configSnapshot = JSON.parse(JSON.stringify(cfg || {}));" in load_block
-    assert "function addChangedSection(target, sectionName, candidate)" in save_block
+    assert "function addChangedSection(target, sectionName, candidate, force)" in save_block
+    assert "if (force) {" in save_block
     assert "var activeTarget = activeTab ? activeTab.dataset.tab : '';" in save_block
     assert "var body = {" in save_block
-    assert "if (candidate[sectionName]) addChangedSection(body, sectionName, candidate[sectionName]);" in save_block
+    assert "forceSections.gateway = true;" in save_block
+    assert "forceSections.recall = true;" in save_block
+    assert "forceSections.memory_diffusion = true;" in save_block
+    assert "addChangedSection(body, sectionName, candidate[sectionName], !!forceSections[sectionName]);" in save_block
     assert "if (!body.persona) body.persona = {};" in save_block
     assert "body.persona.api_key = personaKeyVal;" in save_block
 
