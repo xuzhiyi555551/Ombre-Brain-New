@@ -53,9 +53,9 @@ def test_darkroom_status_is_door_only(tmp_path):
     status = store.status()
 
     assert status["status"] == "ok"
-    assert status["count"] == 1
-    assert first["room_id"] == second["room_id"]
-    assert second["revision"] == 2
+    assert status["count"] == 2
+    assert first["room_id"] != second["room_id"]
+    assert second["revision"] == 1
     assert status["last_entry_id"] == second["entry_id"]
     assert status["last_room_id"] == second["room_id"]
     assert "last_completeness" not in status
@@ -67,11 +67,13 @@ def test_darkroom_status_is_door_only(tmp_path):
 def test_darkroom_continue_anchor_stays_private(tmp_path):
     store = _store(tmp_path)
     old_secret = "上一条暗房里不该出门的句子"
-    store.enter(old_secret)
+    first = store.enter(old_secret)
 
-    result = store.enter("新的暗房正文", mode="continue")
+    result = store.enter("新的暗房正文", mode="continue", new_room=False)
 
     assert result["mode"] == "continue"
+    assert result["room_id"] == first["room_id"]
+    assert result["revision"] == 2
     assert result["continuation_anchor_entries"] == 1
     assert old_secret not in str(result)
     assert old_secret not in str(store.status())
@@ -91,14 +93,14 @@ def test_darkroom_continue_context_returns_recent_active_notes(tmp_path):
     assert context["status"] == "ok"
     assert context["count"] == 1
     assert context["entries"][0]["content"] == second_secret
-    assert context["entries"][0]["revision"] == 2
+    assert context["entries"][0]["revision"] == 1
     assert archived_secret not in str(context)
 
 
-def test_darkroom_new_room_creates_separate_active_draft(tmp_path):
+def test_darkroom_enter_defaults_to_new_room(tmp_path):
     store = _store(tmp_path)
     first = store.enter("第一间房")
-    second = store.enter("第二间房", new_room=True)
+    second = store.enter("第二间房")
 
     status = store.status()
     context = store.continue_context()
@@ -109,6 +111,49 @@ def test_darkroom_new_room_creates_separate_active_draft(tmp_path):
     assert status["last_room_id"] == second["room_id"]
     assert context["entries"][0]["room_id"] == second["room_id"]
     assert context["entries"][0]["content"] == "第二间房"
+
+
+def test_darkroom_rooms_returns_door_list_without_content(tmp_path):
+    store = _store(tmp_path)
+    first_secret = "第一间房正文不该出现在门牌里"
+    second_secret = "第二间房正文也不该出现在门牌里"
+    first = store.enter(first_secret, lock_for="1d")
+    second = store.enter(second_secret)
+
+    rooms = store.rooms()
+
+    assert rooms["status"] == "ok"
+    assert rooms["visibility"] == "active"
+    assert rooms["count"] == 2
+    assert rooms["total"] == 2
+    assert [item["room_id"] for item in rooms["rooms"]] == [second["room_id"], first["room_id"]]
+    assert rooms["rooms"][0]["latest_entry_id"] == second["entry_id"]
+    assert rooms["rooms"][0]["revision"] == 1
+    assert rooms["rooms"][0]["latest_written_at"]
+    assert rooms["rooms"][1]["locked"] is True
+    assert first_secret not in str(rooms)
+    assert second_secret not in str(rooms)
+
+
+def test_darkroom_rooms_can_list_retracted_door_without_content(tmp_path):
+    store = _store(tmp_path)
+    bad_secret = "写错的正文不该出现在门牌里"
+    retract_note = "撤回：上一条写错了。"
+    first = store.enter(bad_secret)
+    retracted = store.enter(retract_note, new_room=False, visibility="retracted")
+
+    active_rooms = store.rooms()
+    all_rooms = store.rooms(visibility="all")
+
+    assert active_rooms["count"] == 0
+    assert all_rooms["count"] == 1
+    assert all_rooms["rooms"][0]["room_id"] == first["room_id"]
+    assert all_rooms["rooms"][0]["latest_entry_id"] == retracted["entry_id"]
+    assert all_rooms["rooms"][0]["revision"] == 2
+    assert all_rooms["rooms"][0]["revision_count"] == 2
+    assert all_rooms["rooms"][0]["visibility"] == "retracted"
+    assert bad_secret not in str(all_rooms)
+    assert retract_note not in str(all_rooms)
 
 
 def test_darkroom_single_mode_has_no_continuation_anchor(tmp_path):
@@ -153,7 +198,7 @@ def test_darkroom_view_returns_all_room_revisions(tmp_path):
     first = "第一版暗房"
     second = "第二版暗房"
     store.enter(first)
-    result = store.enter(second)
+    result = store.enter(second, new_room=False)
 
     viewed = store.view(result["room_id"])
 

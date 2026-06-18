@@ -104,7 +104,7 @@ class DarkroomStore:
         mode: str = "continue",
         visibility: str = "active",
         lock_for: str = "",
-        new_room: bool | str | int = False,
+        new_room: bool | str | int = True,
     ) -> dict:
         text = str(note or "").strip()
         if not text:
@@ -118,9 +118,10 @@ class DarkroomStore:
 
         with self._lock:
             self.base_dir.mkdir(parents=True, exist_ok=True)
-            previous = None if _bool_value(new_room) else self._last_room_unlocked(visibility="active")
+            open_new_room = _bool_value(new_room)
+            previous = None if open_new_room else self._last_room_unlocked(visibility="active")
             state = self._status_unlocked()
-            continuation_anchor = {} if _bool_value(new_room) else self._continuation_anchor_unlocked(mode_key)
+            continuation_anchor = {} if open_new_room else self._continuation_anchor_unlocked(mode_key)
             room_id = self._entry_room_id(previous) if previous else self._new_room_id()
             entry = {
                 "id": self._new_entry_id(),
@@ -148,6 +149,21 @@ class DarkroomStore:
     def status(self) -> dict:
         with self._lock:
             return self._status_unlocked()
+
+    def rooms(self, *, limit: int = 20, visibility: str = "active") -> dict:
+        visibility_key = str(visibility or "active").strip().lower()
+        visibility_filter = None if visibility_key in {"all", "*"} else _normalize_visibility(visibility_key)
+        limit_count = max(1, min(100, int(limit)))
+        with self._lock:
+            entries = self._current_room_entries_unlocked(visibility=visibility_filter)
+            selected = list(reversed(entries[-limit_count:]))
+            return {
+                "status": "ok",
+                "visibility": visibility_key if visibility_filter is None else visibility_filter,
+                "count": len(selected),
+                "total": len(entries),
+                "rooms": [self._room_door_payload_unlocked(entry) for entry in selected],
+            }
 
     def release(self, entry_id: str = "latest", *, reason: str = "") -> dict:
         with self._lock:
@@ -293,6 +309,24 @@ class DarkroomStore:
             "revision": entry.get("revision", 1),
             "created_at": entry.get("created_at", ""),
             "unlock_at": unlock_at.isoformat(timespec="seconds"),
+        }
+
+    def _room_door_payload_unlocked(self, entry: dict) -> dict:
+        room_id = self._entry_room_id(entry)
+        room_entries = self._room_entries_unlocked(room_id)
+        first = room_entries[0] if room_entries else entry
+        locked = self._locked_payload_unlocked(entry)
+        return {
+            "room_id": room_id,
+            "latest_entry_id": str(entry.get("id") or ""),
+            "revision": entry.get("revision", 1),
+            "revision_count": len(room_entries) if room_entries else 1,
+            "created_at": str(first.get("created_at") or ""),
+            "latest_written_at": str(entry.get("created_at") or ""),
+            "visibility": str(entry.get("visibility") or "active"),
+            "locked_until": str(entry.get("locked_until") or ""),
+            "locked": bool(locked),
+            "unlock_at": str(locked.get("unlock_at") or "") if locked else "",
         }
 
     def _status_unlocked(self) -> dict:

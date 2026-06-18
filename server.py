@@ -1374,7 +1374,7 @@ def _format_handoff_darkroom_door() -> str:
     last_entered = str(status.get("last_entered_at") or "").strip()
     lines = [
         str(status.get("door") or "暗房存在。门口只显示状态，不显示未显影正文。"),
-        "Use darkroom_enter to continue the current active room draft; new_room=true opens another room. Unreleased draft text stays private until darkroom_view allows it.",
+        "darkroom_enter opens a new room by default; use new_room=false only when explicitly continuing the current active room. Unreleased draft text stays private until darkroom_view allows it.",
     ]
     if count:
         detail = f"entries={count}"
@@ -7206,9 +7206,9 @@ async def darkroom_enter(
     source: str = "mcp",
     visibility: str = "active",
     lock_for: str = "",
-    new_room: bool = False,
+    new_room: bool = True,
 ) -> dict:
-    """写入一段未显影的私密反思；默认第一人称，不用第三人称自述；默认更新当前 active 房间草稿，new_room=true 新开房间；不回显 note 正文。"""
+    """写入一段未显影的私密反思；默认第一人称，不用第三人称自述；默认新开房间，new_room=false 才续写当前 active 房间；写错要撤回已有房间时传 new_room=false + visibility="retracted"；不回显 note 正文。"""
     try:
         return darkroom_store.enter(
             note,
@@ -7220,6 +7220,15 @@ async def darkroom_enter(
             lock_for=lock_for,
             new_room=new_room,
         )
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@mcp.tool()
+async def darkroom_rooms(limit: int = 20, visibility: str = "active") -> dict:
+    """只读列出暗房门牌，不返回正文；默认列 active 房间，可传 visibility="all" 看全部门牌，用 room_id 再调用 darkroom_view。"""
+    try:
+        return darkroom_store.rooms(limit=limit, visibility=visibility)
     except ValueError as exc:
         return {"status": "error", "error": str(exc)}
 
