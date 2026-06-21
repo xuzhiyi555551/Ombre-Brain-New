@@ -130,7 +130,7 @@ def load_config(config_path: str = None) -> dict:
         "log_level": "INFO",
         "buckets_dir": os.path.join(os.path.dirname(os.path.abspath(__file__)), "buckets"),
         "state_dir": "",
-        "merge_threshold": 75,
+        "merge_threshold": 90,
         "import": {
             "chunk_target_tokens": 3500,
             "extract_max_input_chars": 0,
@@ -139,7 +139,7 @@ def load_config(config_path: str = None) -> dict:
             "max_tag_chars": 12,
             "auto_merge_enabled": False,
             "merge_threshold": 90,
-            "merge_min_content_similarity": 92,
+            "merge_min_content_similarity": 99,
             "merge_require_domain_overlap": True,
             "merge_require_source_match": True,
             "merge_block_disjoint_dates": True,

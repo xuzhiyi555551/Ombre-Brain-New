@@ -493,13 +493,13 @@ def test_dashboard_config_number_zero_values_are_preserved():
     save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
 
     assert "document.getElementById('cfg-dehy-temp').value = cfg.dehydration.temperature ?? 0.1;" in load_block
-    assert "document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 75;" in load_block
+    assert "document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 90;" in load_block
     assert "temperature: floatValue('cfg-dehy-temp', 0.1)," not in save_block
-    assert "merge_threshold: numberValue('cfg-merge', 75)," not in save_block
+    assert "merge_threshold: numberValue('cfg-merge', 90)," not in save_block
     assert "cfg.dehydration.temperature || 0.1" not in load_block
-    assert "cfg.merge_threshold || 75" not in load_block
+    assert "cfg.merge_threshold || 90" not in load_block
     assert "parseFloat(document.getElementById('cfg-dehy-temp').value) || 0.1" not in save_block
-    assert "parseInt(document.getElementById('cfg-merge').value) || 75" not in save_block
+    assert "parseInt(document.getElementById('cfg-merge').value) || 90" not in save_block
 
 
 def test_dashboard_import_file_input_resets_after_selection():

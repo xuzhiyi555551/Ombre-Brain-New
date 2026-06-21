@@ -6067,7 +6067,7 @@ async function loadConfig() {
       (cfg.portrait && cfg.portrait.first_run_material_limit) ?? 160;
     document.getElementById('cfg-self-anchor-entry').value =
       (cfg.self_anchor && cfg.self_anchor.entry_bucket_id) || '';
-    document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 75;
+    document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 90;
     document.getElementById('config-readonly').innerHTML =
       'Transport: <strong>' + esc(cfg.transport) + '</strong><br>' +
       'Buckets dir: <strong>' + esc(cfg.buckets_dir) + '</strong><br>' +
@@ -6254,8 +6254,8 @@ async function saveConfig(persist, persistEnv) {
     }
   });
 
-  var mergeVal = numberValue('cfg-merge', 75);
-  if (configSnapshot && mergeVal !== (configSnapshot.merge_threshold ?? 75)) {
+  var mergeVal = numberValue('cfg-merge', 90);
+  if (configSnapshot && mergeVal !== (configSnapshot.merge_threshold ?? 90)) {
     body.merge_threshold = mergeVal;
   }
 

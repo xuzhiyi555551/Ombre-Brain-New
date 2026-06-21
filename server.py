@@ -3230,7 +3230,7 @@ async def _merge_or_create(
 
     related_bucket = await _find_readonly_related_bucket(content)
 
-    if allow_merge and existing and existing[0].get("score", 0) > config.get("merge_threshold", 75):
+    if allow_merge and existing and existing[0].get("score", 0) > config.get("merge_threshold", 90):
         bucket = existing[0]
         # --- Never merge into pinned/protected buckets ---
         # --- 不合并到钉选/保护桶 ---
@@ -9702,7 +9702,7 @@ async def api_config_get(request):
                 getattr(portrait_engine, "persona_events_limit", 24),
             ),
         },
-        "merge_threshold": config.get("merge_threshold", 75),
+        "merge_threshold": config.get("merge_threshold", 90),
         "transport": config.get("transport", "stdio"),
         "buckets_dir": config.get("buckets_dir", ""),
     })

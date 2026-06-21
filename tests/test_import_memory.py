@@ -368,7 +368,7 @@ async def test_import_auto_merge_requires_high_content_similarity(test_config):
         "import": {
             "auto_merge_enabled": True,
             "merge_threshold": 90,
-            "merge_min_content_similarity": 92,
+            "merge_min_content_similarity": 99,
             "merge_require_source_match": True,
         },
     }
