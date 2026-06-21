@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from import_memory import IMPORT_EXTRACT_PROMPT, ImportEngine, chunk_turns, detect_and_parse
@@ -33,6 +35,51 @@ def test_markdown_parser_supports_ascii_role_prefixes():
         ("assistant", "second"),
         ("user", "third"),
         ("assistant", "fourth"),
+    ]
+
+
+def test_chatgpt_json_parser_skips_non_chat_roles():
+    raw = json.dumps(
+        {
+            "mapping": {
+                "system": {
+                    "message": {
+                        "author": {"role": "system"},
+                        "content": {"parts": ["hidden instructions"]},
+                        "create_time": 1,
+                    }
+                },
+                "user": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"parts": ["小雨说今晚想听故事。"]},
+                        "create_time": 2,
+                    }
+                },
+                "tool": {
+                    "message": {
+                        "author": {"role": "tool"},
+                        "content": {"parts": ["tool result should not enter memory"]},
+                        "create_time": 3,
+                    }
+                },
+                "assistant": {
+                    "message": {
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Haven 回应她。"]},
+                        "create_time": 4,
+                    }
+                },
+            }
+        },
+        ensure_ascii=False,
+    )
+
+    turns = detect_and_parse(raw, "chat.json")
+
+    assert [(turn["role"], turn["content"]) for turn in turns] == [
+        ("user", "小雨说今晚想听故事。"),
+        ("assistant", "Haven 回应她。"),
     ]
 
 
