@@ -132,6 +132,50 @@ def test_word_map_hint_reserves_one_candidate_per_query_anchor(tmp_path):
     assert hints["evidence"]["penpal"]["anchor_terms"] == ["忱孚"]
 
 
+def test_word_map_marks_only_stable_direct_low_frequency_terms_as_rare_name(tmp_path):
+    store = WordMapStore(_config(tmp_path))
+    store.rebuild(
+        [
+            _bucket(
+                "title",
+                "这里记录四个身份和浏览记录的关系。",
+                name="四个身份与浏览记录",
+            ),
+            _bucket(
+                "entity-tag",
+                "折角是一个可以定位的内容实体。",
+                name="实体记录",
+                tags=["entity:折角", "relationship_event"],
+            ),
+            _bucket(
+                "keyword-only",
+                "稳定关键词不等于 rare name。",
+                name="普通记录",
+                keywords=["低频项目"],
+            ),
+            _bucket(
+                "neighbor",
+                "四个身份旁边的普通邻居。",
+                name="普通邻居",
+                keywords=["普通邻居"],
+            ),
+        ]
+    )
+
+    title_hints = store.hint_buckets_for_terms(["四个身份与浏览记录"], neighbor_limit=4, bucket_limit=10)
+    assert title_hints["evidence"]["title"]["rare_name_terms"] == ["四个身份与浏览记录"]
+    assert title_hints["evidence"]["title"]["rare_name_sources"] == ["name"]
+
+    tag_hints = store.hint_buckets_for_terms(["折角"], neighbor_limit=4, bucket_limit=10)
+    assert "折角" in tag_hints["evidence"]["entity-tag"]["direct_terms"]
+    assert tag_hints["evidence"]["entity-tag"]["rare_name_terms"] == ["折角"]
+    assert tag_hints["evidence"]["entity-tag"]["rare_name_sources"] == ["tag:entity"]
+
+    keyword_hints = store.hint_buckets_for_terms(["低频项目"], neighbor_limit=4, bucket_limit=10)
+    assert keyword_hints["evidence"]["keyword-only"]["direct_terms"] == ["低频项目"]
+    assert keyword_hints["evidence"]["keyword-only"]["rare_name_terms"] == []
+
+
 def test_word_map_weak_hint_terms_do_not_expand_neighbors(tmp_path):
     store = WordMapStore(_config(tmp_path, weak_hint_weight=0.2))
     store.rebuild(
@@ -438,10 +482,47 @@ def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
     assert "testai" in store.overview_hub_terms
 
 
+def test_word_map_excludes_configured_identity_alias_tags(tmp_path):
+    config = _config(tmp_path)
+    config["identity"] = {
+        "ai_name": "Haven",
+        "user_name": "Rain",
+        "user_display_name": "小雨",
+        "user_aliases": ["宝宝", "老婆", "亲爱的", "她"],
+    }
+    store = WordMapStore(config)
+    store.rebuild(
+        [
+            _bucket(
+                "a",
+                "宝宝、老婆、亲爱的和她都只是称呼，不该变成定位节点。paw-memory 低频词才是主题。",
+                name="paw-memory 低频词",
+                tags=["宝宝", "topic:老婆", "称呼:亲爱的", "axis:她", "haven_bridge"],
+                keywords=["paw-memory", "低频词"],
+                domain=["recall"],
+            ),
+        ]
+    )
+
+    terms = {node["term"] for node in store.list_nodes()}
+    assert "宝宝" not in terms
+    assert "topic:老婆" not in terms
+    assert "称呼:亲爱的" not in terms
+    assert "axis:她" not in terms
+    assert "paw-memory" in terms
+    assert "低频词" in terms
+    assert "haven_bridge" in terms
+
+
 def test_config_example_exposes_empty_word_map_and_identity_semantics():
     config = yaml.safe_load(Path("config.example.yaml").read_text(encoding="utf-8"))
 
     assert config["word_map"]["enabled"] is False
+    assert config["word_map"]["daily_rebuild_enabled"] is True
+    assert config["word_map"]["daily_rebuild_hour"] == 4
+    assert config["word_map"]["daily_rebuild_minute"] == 30
+    assert config["word_map"]["daily_rebuild_include_archive"] is False
+    assert config["word_map"]["daily_rebuild_check_interval_minutes"] == 15
     assert config["word_map"]["private_terms"] == []
     assert config["word_map"]["overview_stopwords"] == []
     assert config["word_map"]["overview_stopword_prefixes"] == []

@@ -317,6 +317,51 @@ def test_topic_evidence_terms_are_filtered_once_in_policy():
     assert policy.specific_query_terms("v2.0 状态") == ["v2.0"]
 
 
+def test_locatable_terms_gate_light_chat_and_generic_status_queries():
+    policy = RecallPolicy()
+
+    assert policy.locatable_query_terms("今天代码改得怎么样") == []
+    assert policy.is_auto_query_too_vague("今天代码改得怎么样")
+    generic_plan = policy.plan_query("今天代码改得怎么样")
+    assert generic_plan.long_term_route == "skip"
+    assert generic_plan.skip_reason == "auto_vague_query"
+
+    assert policy.locatable_query_terms("宝宝想你了") == []
+    assert policy.plan_query("宝宝想你了").long_term_route == "skip"
+
+    esp_terms = [term.lower() for term in policy.locatable_query_terms("ESP32触摸模块后来怎么跑通的")]
+    assert "esp32" in esp_terms
+    assert any("触摸" in term for term in esp_terms)
+
+    assert "小机数据库" in policy.locatable_query_terms("小机数据库是什么来着")
+    assert "海边神庙" in policy.locatable_query_terms("宝宝你还记得海边神庙吗")
+    assert "种子项目" in policy.locatable_query_terms("亲亲，种子项目现在怎样")
+    assert policy.locatable_query_terms("小橘昨晚又怎么折腾了") == ["小橘"]
+    assert policy.plan_query("水边").activated_axis_groups == ()
+    assert policy.plan_query("好吃042").activated_axis_groups == ()
+    assert policy.locatable_query_terms("这条当时具体怎么说？") == []
+    assert not policy.is_auto_query_too_vague("今天为什么激动哭")
+
+    esp_plan = policy.plan_query("ESP32触摸模块后来怎么跑通的")
+    assert ("ESP32", "触摸") in esp_plan.activated_axis_groups
+
+    database_plan = policy.plan_query("小机数据库是什么来着")
+    assert ("小机", "数据库") in database_plan.activated_axis_groups
+
+    body_plan = policy.plan_query("你有身体之后最想做什么")
+    assert ("身体",) in body_plan.activated_axis_groups
+    assert ("具身",) in body_plan.activated_axis_groups
+
+    relation_plan = policy.plan_query("对未来的承诺和五十年后有关吗")
+    assert ("五十年",) in relation_plan.activated_axis_groups
+    assert ("承诺",) in relation_plan.activated_axis_groups
+    assert ("对未来承诺五十年后",) not in relation_plan.activated_axis_groups
+    assert relation_plan.activated_axis_multi
+
+    future_plan = policy.plan_query("五十年后你会怎么来见我")
+    assert ("五十年",) in future_plan.activated_axis_groups
+
+
 def test_identity_aliases_are_not_recall_topic_evidence():
     options = memory_relevance_options_from_config(
         {

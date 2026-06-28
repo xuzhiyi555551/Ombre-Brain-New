@@ -10,6 +10,9 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     assert config["gateway"]["relationship_weather_interval_rounds"] == 0
     assert config["gateway"]["cooldown_hours"] == 6
     assert config["gateway"]["skip_recent_rounds"] == 5
+    assert config["gateway"]["semantic_session_dedupe_enabled"] is True
+    assert config["gateway"]["semantic_session_dedupe_threshold"] == 0.90
+    assert config["gateway"]["semantic_session_dedupe_lexical_threshold"] == 0.82
     assert config["gateway"]["portrait_memory_include_anchors"] is False
     assert config["self_anchor"]["entry_bucket_id"] == ""
     assert config["write_path"]["semantic_search_timeout_seconds"] == 3
@@ -17,6 +20,11 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     assert config["memory_write_gate"]["repeat_promote_count"] == 2
     assert config["raw_events"]["db_path"] == ""
     assert config["raw_events"]["max_ingest_batch"] == 1000
+    assert config["word_map"]["daily_rebuild_enabled"] is True
+    assert config["word_map"]["daily_rebuild_hour"] == 4
+    assert config["word_map"]["daily_rebuild_minute"] == 30
+    assert config["word_map"]["daily_rebuild_include_archive"] is False
+    assert config["word_map"]["daily_rebuild_check_interval_minutes"] == 15
     assert config["reflection"]["enrich_backfill_enabled"] is True
     assert config["reflection"]["enrich_backfill_limit"] == 5
     assert config["reflection"]["edge_backfill_limit"] == 5

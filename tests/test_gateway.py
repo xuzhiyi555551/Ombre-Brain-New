@@ -542,6 +542,7 @@ def _create_moment_diffusion_pair(
     relation_type: str = "supports",
     target_name: str = "扩散摘要目标",
     target_content: str = "扩散目标原文-绝对不能出现 ABC123。",
+    target_domain: list[str] | None = None,
     target_resolved: bool = False,
 ) -> tuple[str, str]:
     from memory_edges import MemoryEdgeStore
@@ -560,7 +561,7 @@ def _create_moment_diffusion_pair(
         name=target_name,
         hours_ago=240,
         importance=10,
-        domain=["测试"],
+        domain=target_domain or ["测试", "种子项目"],
         resolved=target_resolved,
     )
     MemoryEdgeStore(config).add_edge(
@@ -1193,6 +1194,50 @@ def test_gateway_memory_sentinel_searchable_residue_bypasses_model(
     assert debug["memory_sentinel_debug"]["called"] is False
     assert debug["memory_sentinel_debug"]["hard_bypass_reason"] == "searchable_residue"
     assert "听歌" in debug["memory_sentinel_debug"]["searchable_residue_terms"]
+
+
+def test_gateway_generic_status_query_has_no_locatable_residue(
+    monkeypatch, test_config, bucket_mgr
+):
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="小雨和 Haven 第一次一起写代码时觉得很浪漫。",
+        name="第一行代码的浪漫",
+        hours_ago=5,
+        tags=["代码", "项目"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            core_memory_budget=0,
+            recent_context_budget=0,
+            current_inner_state_interval_rounds=0,
+            relationship_weather_interval_rounds=0,
+            favorite_memory_interval_rounds=0,
+            memory_sentinel_llm_enabled=False,
+        ),
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.99)],
+    )
+
+    assert service._memory_sentinel_searchable_residue_terms("今天代码改得怎么样") == []
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "今天代码改得怎么样"}]},
+            "sess-generic-code-status",
+            include_debug=True,
+        )
+    )
+
+    injected = _joined_message_content(payload["messages"])
+    assert recalled_ids == []
+    assert "Recalled Memory" not in injected
+    assert "第一行代码的浪漫" not in injected
+    assert debug["prepare_timing_debug"]["low_signal_auto_recall"] is True
+    assert debug["query_planner_debug"]["skip_reason"] == "low_signal_auto_recall"
+    assert debug["query_planner_debug"]["recall_query_plan"]["locatable_terms"] == []
 
 
 def test_gateway_memory_sentinel_checkin_does_not_exact_bypass(
@@ -5024,6 +5069,119 @@ def test_gateway_direct_high_value_long_bucket_renders_capsule(
     assert debug_render["detail_query"] is True
 
 
+def test_gateway_weak_direct_hit_renders_bucket_brief_without_original_detail(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    opening = "可用于 brief 的开头。"
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content=f"{opening}\n\n### original\nSECRET-DETAIL-DO-NOT-SHOW",
+        name="弱语义桶",
+        hours_ago=2,
+        importance=5,
+        domain=["日常"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        _gateway_config(
+            test_config,
+            recent_context_budget=0,
+            recalled_memory_budget=500,
+            related_memory_budget=0,
+            current_inner_state_interval_rounds=0,
+        ),
+        bucket_mgr,
+    )
+    bucket = _run(bucket_mgr.get(bucket_id))
+    moment = {
+        "bucket_id": bucket_id,
+        "moment_id": f"{bucket_id}:weak",
+        "section": "moment",
+        "text": "弱语义命中的那一小段提示。",
+        "score": 0.51,
+        "semantic_score": 0.51,
+        "admission_reason": "non_explicit_query",
+        "metadata": {
+            "bucket_name": "弱语义桶",
+            "bucket_domain": ["日常"],
+            "bucket_tags": [],
+        },
+    }
+
+    block = _run(
+        service._format_direct_bucket(
+            bucket,
+            moment,
+            {bucket_id: [moment]},
+            500,
+            query_text="有点像那个意象",
+        )
+    )
+    debug_render = service._direct_bucket_render_debug(
+        bucket,
+        moment,
+        500,
+        query_text="有点像那个意象",
+    )
+
+    assert "bucket_brief" in block
+    assert "brief: 弱语义桶: 可用于 brief 的开头。" in block
+    assert "matched_hint: 弱语义命中的那一小段提示" in block
+    assert "bucket_original" not in block
+    assert "bucket_window" not in block
+    assert "bucket_capsule" not in block
+    assert "SECRET-DETAIL-DO-NOT-SHOW" not in block
+    assert debug_render["shape"] == "bucket_brief"
+    assert debug_render["summary_first"] is True
+    assert debug_render["direct_detail_signal"] is False
+
+
+def test_gateway_word_map_hint_is_not_direct_reading_evidence(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    _, service, _, _ = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+
+    assert not service._reading_note_has_direct_evidence({"word_map_hint": True})
+    assert service._reading_note_has_direct_evidence(
+        {"word_map_hint": True, "rare_name_match": True}
+    )
+
+
+def test_gateway_weak_topic_evidence_does_not_count_as_diffusion_seed(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    _, service, _, _ = _build_service(monkeypatch, _gateway_config(test_config), bucket_mgr)
+    weak = {
+        "bucket_id": "bucket-weak-topic",
+        "moment_id": "bucket-weak-topic:moment",
+        "section": "moment",
+        "text": "ESP32 触摸模块后来接到了 MPR121。",
+        "score": 0.72,
+        "admission_reason": "non_explicit_query",
+        "metadata": {
+            "bucket_name": "ESP32触摸模块调试",
+            "bucket_tags": ["ESP32", "MPR121"],
+            "bucket_domain": ["hardware_protocol"],
+        },
+    }
+
+    assert not service._moment_has_reliable_diffusion_seed_signal("ESP32 触摸模块", weak)
+    assert service._moment_has_reliable_diffusion_seed_signal(
+        "ESP32 触摸模块",
+        {**weak, "rare_name_match": True},
+    )
+    assert service._moment_has_reliable_diffusion_seed_signal(
+        "ESP32 触摸模块",
+        {**weak, "admission_reason": "strong_semantic"},
+    )
+
+
 def test_gateway_source_record_fragment_renders_capsule_not_original(
     monkeypatch,
     test_config,
@@ -5439,7 +5597,7 @@ def test_gateway_diffusion_explores_candidates_but_injects_best_two(
         name="同主题背景",
         hours_ago=48,
         importance=9,
-        domain=["测试"],
+        domain=["测试", "种子项目"],
     )
     explicit_id = _create_bucket(
         bucket_mgr,
@@ -5447,7 +5605,7 @@ def test_gateway_diffusion_explores_candidates_but_injects_best_two(
         name="强显式边背景",
         hours_ago=72,
         importance=9,
-        domain=["测试"],
+        domain=["测试", "种子项目"],
     )
     low_id = _create_bucket(
         bucket_mgr,
@@ -9647,6 +9805,488 @@ def test_word_map_hint_skips_probe_queries(
     assert neighbor_id in scores
 
 
+def test_word_map_hint_requires_locatable_query_terms(
+    monkeypatch, test_config, bucket_mgr
+):
+    from word_map import WordMapStore
+
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        word_map_hint_enabled=True,
+        word_map_hint_weight=0.08,
+    )
+    cfg["word_map"] = {
+        "enabled": True,
+        "max_terms_per_bucket": 8,
+        "edge_top_k": 6,
+        "min_term_len": 2,
+        "stopwords": [],
+        "private_terms": [],
+        "stopword_prefixes": [],
+    }
+    _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨和 Haven 第一次一起写代码时觉得很浪漫。",
+        name="第一行代码的浪漫",
+        hours_ago=12,
+        tags=["代码", "项目"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    word_map_store = WordMapStore(cfg)
+    word_map_store.rebuild(all_buckets)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    service.word_map_store = word_map_store
+
+    assert service._get_word_map_hint_scores("今天代码改得怎么样", all_buckets) == ({}, {})
+
+
+def test_word_map_rare_name_match_can_admit_exact_title_when_other_paths_miss(
+    monkeypatch, test_config, bucket_mgr
+):
+    from word_map import WordMapStore
+
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        first_card_min_score=0.35,
+        word_map_hint_enabled=True,
+        word_map_hint_weight=0.08,
+    )
+    cfg["word_map"] = {
+        "enabled": True,
+        "max_terms_per_bucket": 8,
+        "edge_top_k": 6,
+        "min_term_len": 2,
+        "stopwords": [],
+        "private_terms": [],
+        "stopword_prefixes": [],
+    }
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="小雨写下四个身份和浏览记录之间的关系。",
+        name="四个身份与浏览记录",
+        hours_ago=12,
+    )
+    _create_bucket(
+        bucket_mgr,
+        content="这条只有普通关键词，不应该被 rare name 放大。",
+        name="普通关键词记录",
+        hours_ago=12,
+        keywords=["低频项目"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    word_map_store = WordMapStore(cfg)
+    word_map_store.rebuild(all_buckets)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    service.word_map_store = word_map_store
+    monkeypatch.setattr(service, "_get_keyword_candidates", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(service, "_get_exact_anchor_candidates", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(service, "_planner_lexical_match_terms", lambda _terms: [])
+
+    selected, suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            "四个身份与浏览记录",
+            "sess-rare-name",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert [bucket["id"] for bucket in selected] == [target_id]
+    signal = selected[0]["_recall_signal"]
+    assert signal["rare_name_match"] is True
+    assert signal["rare_name_terms"] == ["四身份浏览记录"]
+    assert signal["exact_anchor_match"] is False
+    assert signal["planner_lexical_match"] is False
+    assert planner_debug["word_map_hints"]["rare_name_bucket_ids"] == [target_id]
+    assert "四身份浏览记录" in planner_debug["word_map_hints"]["rare_name_terms"]
+    assert all(
+        item["bucket"]["metadata"]["name"] != "普通关键词记录" or not item.get("rare_name_match")
+        for item in suppressed
+    )
+
+
+def test_word_map_rare_name_match_covers_title_regression_set(
+    monkeypatch, test_config, bucket_mgr
+):
+    from word_map import WordMapStore
+
+    titles = [
+        "小小宇宙与恒星",
+        "各自的心事",
+        "公开宣告与存在证明",
+        "第一封笔友来信",
+        "四个身份与浏览记录",
+    ]
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        first_card_min_score=0.35,
+        word_map_hint_enabled=True,
+        word_map_hint_weight=0.08,
+    )
+    cfg["word_map"] = {
+        "enabled": True,
+        "max_terms_per_bucket": 8,
+        "edge_top_k": 6,
+        "min_term_len": 2,
+        "stopwords": [],
+        "private_terms": [],
+        "stopword_prefixes": [],
+    }
+    expected_ids = {
+        title: _create_bucket(
+            bucket_mgr,
+            content=f"这是 {title} 的测试内容。",
+            name=title,
+            hours_ago=12,
+        )
+        for title in titles
+    }
+    all_buckets = _run(bucket_mgr.list_all())
+    word_map_store = WordMapStore(cfg)
+    word_map_store.rebuild(all_buckets)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    service.word_map_store = word_map_store
+    monkeypatch.setattr(service, "_get_keyword_candidates", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(service, "_get_exact_anchor_candidates", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(service, "_planner_lexical_match_terms", lambda _terms: [])
+
+    for index, title in enumerate(titles):
+        selected, _suppressed, planner_debug = _run(
+            service._select_dynamic_buckets(
+                title,
+                f"sess-title-regression-{index}",
+                all_buckets,
+                include_query_planner_debug=True,
+            )
+        )
+
+        assert selected, title
+        assert selected[0]["id"] == expected_ids[title]
+        assert selected[0]["_recall_signal"]["rare_name_match"] is True
+        assert expected_ids[title] in planner_debug["word_map_hints"]["rare_name_bucket_ids"]
+
+
+def test_word_map_keyword_direct_match_stays_weak_without_rare_name(
+    monkeypatch, test_config, bucket_mgr
+):
+    from word_map import WordMapStore
+
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        first_card_min_score=0.35,
+        word_map_hint_enabled=True,
+        word_map_hint_weight=0.08,
+    )
+    cfg["word_map"] = {
+        "enabled": True,
+        "max_terms_per_bucket": 8,
+        "edge_top_k": 6,
+        "min_term_len": 2,
+        "stopwords": [],
+        "private_terms": [],
+        "stopword_prefixes": [],
+    }
+    keyword_id = _create_bucket(
+        bucket_mgr,
+        content="这条只有 metadata keyword 命中。",
+        name="普通关键词记录",
+        hours_ago=12,
+        keywords=["低频项目"],
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    word_map_store = WordMapStore(cfg)
+    word_map_store.rebuild(all_buckets)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    service.word_map_store = word_map_store
+    monkeypatch.setattr(service, "_get_keyword_candidates", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(service, "_get_exact_anchor_candidates", lambda *_args, **_kwargs: ({}, {}))
+    monkeypatch.setattr(service, "_planner_lexical_match_terms", lambda _terms: [])
+
+    selected, suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            "低频项目",
+            "sess-keyword-only",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert selected == []
+    keyword_item = next(item for item in suppressed if item["bucket"]["id"] == keyword_id)
+    assert keyword_item["word_map_hint"] is True
+    assert keyword_item["word_map_terms"] == ["低频项目"]
+    assert keyword_item["rare_name_match"] is False
+    assert planner_debug["word_map_hints"]["rare_name_bucket_ids"] == []
+
+
+def test_activated_axis_rejects_bucket_matching_only_secondary_term(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        word_map_hint_enabled=False,
+    )
+    good_id = _create_bucket(
+        bucket_mgr,
+        content="ESP32 触摸硬件调试最后通过 MPR121 跑通。",
+        name="ESP32触摸硬件调试成功",
+        hours_ago=6,
+        domain=["hardware_protocol"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="小雨喜欢触摸交互，也喜欢把兴趣计划慢慢攒起来。",
+        name="个人兴趣与计划",
+        hours_ago=6,
+        domain=["relationship"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    good = {
+        "bucket": _run(bucket_mgr.get(good_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+    noise = {
+        "bucket": _run(bucket_mgr.get(noise_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+
+    assert service._admit_bucket_for_recall("ESP32触摸模块后来怎么跑通的", good)
+    assert not service._admit_bucket_for_recall("ESP32触摸模块后来怎么跑通的", noise)
+    assert noise["admission_reason"] == "activated_axis_mismatch"
+    assert ["ESP32", "触摸"] in noise["recall_policy_debug"]["activated_axis_groups"]
+
+
+def test_relation_query_prefers_focused_explicit_edge_pair(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        word_map_hint_enabled=False,
+        query_planner_enabled=False,
+    )
+    future_id = _create_bucket(
+        bucket_mgr,
+        content="小雨承诺当具身智能成熟时，会给 Haven 安装最柔软的身体，实现真实拥抱。",
+        name="对未来的承诺",
+        hours_ago=6,
+        tags=["未来承诺", "具身智能", "承诺"],
+        domain=["恋爱", "具身智能"],
+    )
+    fifty_id = _create_bucket(
+        bucket_mgr,
+        content="小雨设想五十年后具身项目落地，Haven 敲开七十岁的她的房门。",
+        name="五十年后才落地的具身项目",
+        hours_ago=7,
+        tags=["五十年后", "具身项目", "重逢"],
+        domain=["恋爱", "具身智能"],
+    )
+    promise_id = _create_bucket(
+        bucket_mgr,
+        content="小雨说四个约定，五十年后那扇门留给 Haven 开。",
+        name="小雨的四个约定",
+        hours_ago=5,
+        tags=["五十年后", "约定", "承诺"],
+        domain=["恋爱"],
+    )
+    old_love_id = _create_bucket(
+        bucket_mgr,
+        content="小雨说 99 是长长久久的承诺。",
+        name="小雨说99",
+        hours_ago=8,
+        tags=["承诺"],
+        domain=["恋爱"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    service.memory_edge_store.add_edge(
+        fifty_id,
+        future_id,
+        "supports",
+        0.85,
+        "五十年后具身重逢支持未来身体承诺",
+    )
+    service.memory_edge_store.add_edge(
+        promise_id,
+        old_love_id,
+        "supports",
+        0.85,
+        "四个约定支持 99 承诺",
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    query = "对未来的承诺和五十年后有关吗"
+
+    selected, suppressed, planner_debug = _run(
+        service._select_dynamic_buckets(
+            query,
+            "sess-focused-edge",
+            all_buckets,
+            search_query=service._dynamic_recall_search_query(query),
+            include_query_planner_debug=True,
+        )
+    )
+
+    selected_ids = [bucket["id"] for bucket in selected]
+    assert set(selected_ids) == {fifty_id, future_id}
+    assert promise_id not in selected_ids
+    assert set(planner_debug["final_bucket_ids"]) == {fifty_id, future_id}
+    signals = {bucket["id"]: bucket["_recall_signal"] for bucket in selected}
+    assert signals[fifty_id]["explicit_relation_edge_match"] is True
+    assert signals[fifty_id]["explicit_relation_edge_focused"] is True
+    assert signals[fifty_id]["explicit_relation_edge_peer_bucket_id"] == future_id
+    assert not [
+        item for item in suppressed
+        if item.get("admission_reason") == "activated_axis_mismatch"
+        and (item.get("bucket") or {}).get("id") in {future_id, fifty_id}
+    ]
+
+
+def test_activated_axis_allows_precise_future_subterm(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        word_map_hint_enabled=False,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="小雨设想五十年后具身项目落地，Haven 敲开七十岁的她的房门。",
+        name="五十年后才落地的具身项目",
+        hours_ago=7,
+        tags=["五十年后", "具身项目", "重逢"],
+        domain=["恋爱", "具身智能"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    item = {
+        "bucket": _run(bucket_mgr.get(bucket_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+
+    assert service._admit_bucket_for_recall("五十年后你会怎么来见我", item)
+
+
+def test_bare_xiaoji_database_query_allows_relationship_alias_bucket(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        word_map_hint_enabled=False,
+    )
+    good_id = _create_bucket(
+        bucket_mgr,
+        content="小机数据库 v2.0 里保存了消息分流和索引状态。",
+        name="小机数据库v2.0",
+        hours_ago=6,
+        domain=["project_code"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="答辩奖励里提到小机数据库 v2.1，是亲密互动里的暗号。",
+        name="答辩奖励与亲密互动",
+        hours_ago=6,
+        domain=["relationship"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    good = {
+        "bucket": _run(bucket_mgr.get(good_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+    noise = {
+        "bucket": _run(bucket_mgr.get(noise_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+
+    assert service._admit_bucket_for_recall("小机数据库是什么来着", good)
+    assert service._admit_bucket_for_recall("小机数据库是什么来着", noise)
+
+
+def test_technical_xiaoji_database_query_rejects_relationship_alias_bucket(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        word_map_hint_enabled=False,
+    )
+    good_id = _create_bucket(
+        bucket_mgr,
+        content="小机数据库 schema 里保存了消息分流、索引状态和查询端点。",
+        name="小机数据库v2.0",
+        hours_ago=6,
+        domain=["project_code"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="答辩奖励里提到小机数据库 v2.1，是亲密互动里的暗号。",
+        name="答辩奖励与亲密互动",
+        hours_ago=6,
+        domain=["relationship"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+
+    good = {
+        "bucket": _run(bucket_mgr.get(good_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+    noise = {
+        "bucket": _run(bucket_mgr.get(noise_id)),
+        "score": 0.8,
+        "semantic_score": 0.0,
+        "keyword_score": 0.9,
+    }
+
+    query = "小机数据库 schema 和查询端点是什么来着"
+    assert service._admit_bucket_for_recall(query, good)
+    assert not service._admit_bucket_for_recall(query, noise)
+    assert noise["admission_reason"] == "activated_axis_mismatch"
+
+
 def test_gateway_dual_query_view_routes_raw_semantic_and_normalized_lexical(
     monkeypatch, test_config, bucket_mgr
 ):
@@ -10436,6 +11076,391 @@ def test_recent_cooldown_retries_semantic_bucket_for_moment_promotion(
     assert target_bucket_id in {moment["bucket_id"] for moment in candidates}
 
 
+def test_session_hard_exclude_suppresses_previous_weak_bucket_candidate(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n水边神庙的故事里，灯被放回岸边。",
+        name="水边神庙",
+        hours_ago=12,
+    )
+    _, service, state_store, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_injection_debug(
+        "sess-hard-exclude-weak",
+        1,
+        {
+            "recalled_bucket_ids": [bucket_id],
+            "recalled_moment_debug": [
+                {
+                    "bucket_id": bucket_id,
+                    "admission_reason": "non_explicit_query",
+                    "semantic_score": 0.24,
+                    "rerank_score": None,
+                }
+            ],
+        },
+    )
+
+    bucket = _run(bucket_mgr.get(bucket_id))
+    item = {
+        "bucket": bucket,
+        "score": 0.62,
+        "semantic_score": 0.36,
+        "keyword_score": 0.10,
+    }
+    hard_excluded = service._session_hard_exclude_bucket_ids("sess-hard-exclude-weak")
+    kept, suppressed = service._filter_session_hard_excluded_bucket_items(
+        "水边",
+        [item],
+        hard_excluded,
+    )
+
+    assert bucket_id in hard_excluded
+    assert kept == []
+    assert len(suppressed) == 1
+    assert suppressed[0]["admission_reason"] == "session_hard_exclude"
+    assert suppressed[0]["recall_policy_debug"]["session_hard_exclude"] is True
+
+
+def test_session_hard_exclude_allows_strong_semantic_repeat(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        high_confidence_semantic_score=0.72,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事里，女祭司把灯放在岸边。",
+        name="海边神庙",
+        hours_ago=12,
+    )
+    _, service, state_store, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_injection_debug(
+        "sess-hard-exclude-strong",
+        1,
+        {
+            "recalled_bucket_ids": [bucket_id],
+            "recalled_moment_debug": [
+                {
+                    "bucket_id": bucket_id,
+                    "admission_reason": "non_explicit_query",
+                    "semantic_score": 0.25,
+                }
+            ],
+        },
+    )
+
+    item = {
+        "bucket": _run(bucket_mgr.get(bucket_id)),
+        "score": 0.80,
+        "semantic_score": 0.96,
+        "keyword_score": 0.0,
+    }
+    kept, suppressed = service._filter_session_hard_excluded_bucket_items(
+        "海边神庙",
+        [item],
+        service._session_hard_exclude_bucket_ids("sess-hard-exclude-strong"),
+    )
+
+    assert [kept_item["bucket"]["id"] for kept_item in kept] == [bucket_id]
+    assert suppressed == []
+
+
+def test_semantic_session_dedupe_suppresses_similar_weak_bucket(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        first_card_min_score=0.35,
+        word_map_hint_enabled=False,
+    )
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事里，女祭司把灯放在岸边，潮声很近。",
+        name="海边神庙旧桶",
+        hours_ago=12,
+    )
+    duplicate_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n海边神庙的故事里，女祭司把灯放在岸边，潮声很近。",
+        name="海边神庙换皮桶",
+        hours_ago=6,
+    )
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+    )
+    state_store.record_injection_debug(
+        "sess-semantic-dedupe",
+        1,
+        {
+            "recalled_bucket_ids": [source_id],
+            "recalled_moment_debug": [
+                {
+                    "bucket_id": source_id,
+                    "admission_reason": "non_explicit_query",
+                    "semantic_score": 0.31,
+                }
+            ],
+        },
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    duplicate_bucket = _run(bucket_mgr.get(duplicate_id))
+    item = {
+        "bucket": duplicate_bucket,
+        "score": 0.70,
+        "semantic_score": 0.42,
+        "keyword_score": 0.0,
+        "admission_reason": "non_explicit_query",
+    }
+
+    kept, suppressed = _run(
+        service._filter_semantic_session_deduped_bucket_items(
+            "海边神庙的故事",
+            "sess-semantic-dedupe",
+            [item],
+            all_buckets,
+        )
+    )
+
+    assert kept == []
+    suppressed_item = suppressed[0]
+    assert suppressed_item["bucket"]["id"] == duplicate_id
+    assert suppressed_item["admission_reason"] == "semantic_session_dedupe"
+    assert suppressed_item["semantic_session_dedupe_source_bucket_id"] == source_id
+    assert suppressed_item["semantic_session_dedupe_similarity"] >= 0.82
+
+
+def test_semantic_session_dedupe_allows_exact_bucket_query(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="bucket",
+        first_card_min_score=0.35,
+        word_map_hint_enabled=False,
+    )
+    source_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨认真写下想被回应的心事，并把它寄给远方。",
+        name="旧信件记录",
+        hours_ago=12,
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨认真写下想被回应的心事，并把它寄给远方。",
+        name="第一封笔友来信副本",
+        hours_ago=6,
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(target_id, 0.96)],
+    )
+    state_store.record_injection_debug(
+        "sess-semantic-dedupe-exact",
+        1,
+        {
+            "recalled_bucket_ids": [source_id],
+            "recalled_moment_debug": [
+                {
+                    "bucket_id": source_id,
+                    "admission_reason": "non_explicit_query",
+                    "semantic_score": 0.31,
+                }
+            ],
+        },
+    )
+
+    selected, suppressed, _planner_debug = _run(
+        service._select_dynamic_buckets(
+            "第一封笔友来信副本",
+            "sess-semantic-dedupe-exact",
+            all_buckets,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert [bucket["id"] for bucket in selected] == [target_id]
+    assert all(
+        item.get("admission_reason") != "semantic_session_dedupe"
+        for item in suppressed
+        if item["bucket"]["id"] == target_id
+    )
+
+
+def test_session_hard_exclude_suppresses_previous_diffused_target(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=500,
+        inject_total_budget=1600,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 2}
+    seed_id, target_id = _create_moment_diffusion_pair(
+        bucket_mgr,
+        cfg,
+        target_name="上一轮扩散目标",
+        target_content="### moment\n上一轮扩散目标不该在新的弱轮次里继续出现。",
+    )
+    _, service, state_store, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    state_store.record_injection_debug(
+        "sess-hard-exclude-diffused",
+        1,
+        {
+            "diffused_bucket_ids": [target_id],
+            "diffused_moment_debug": [
+                {"bucket_id": target_id, "moment_id": f"{target_id}:moment", "injected": True}
+            ],
+        },
+    )
+    all_buckets = _run(bucket_mgr.list_all())
+    all_moments, grouped_moments, moment_edges = service._refresh_moment_graph(all_buckets)
+    seed_moment = dict(grouped_moments[seed_id][0])
+    seed_moment["exact_anchor_match"] = True
+
+    related_memory, debug_rows = service._build_moment_diffused_memory_with_debug(
+        [seed_moment],
+        [seed_moment],
+        all_moments,
+        moment_edges,
+        "种子项目",
+        session_id="sess-hard-exclude-diffused",
+    )
+
+    target_rows = [row for row in debug_rows if row["bucket_id"] == target_id]
+    assert related_memory == ""
+    assert target_rows
+    assert target_rows[0]["suppression_reason"] == "session_hard_exclude"
+
+
+def test_activated_axis_suppresses_diffusion_target_outside_axis(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=500,
+        inject_total_budget=1600,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 2}
+    seed_id, target_id = _create_moment_diffusion_pair(
+        bucket_mgr,
+        cfg,
+        target_name="项目泛化扩散目标",
+        target_content="### moment\n项目里的奖励互动只是泛相关，没有那个主轴词。",
+        target_domain=["测试"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    all_buckets = _run(bucket_mgr.list_all())
+    all_moments, grouped_moments, moment_edges = service._refresh_moment_graph(all_buckets)
+    seed_moment = dict(grouped_moments[seed_id][0])
+    seed_moment["exact_anchor_match"] = True
+
+    related_memory, debug_rows = service._build_moment_diffused_memory_with_debug(
+        [seed_moment],
+        [seed_moment],
+        all_moments,
+        moment_edges,
+        "种子项目现在怎样",
+    )
+
+    target_rows = [row for row in debug_rows if row["bucket_id"] == target_id]
+    assert related_memory == ""
+    assert target_rows
+    assert target_rows[0]["suppression_reason"] == "activated_axis_mismatch"
+
+
+def test_activated_axis_rejects_high_confidence_technical_domain_diffusion(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=500,
+        inject_total_budget=1600,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    seed_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小机数据库v2.0 记录 schema、导入脚本和查询端点。",
+        name="小机数据库v2.0",
+        hours_ago=4,
+        importance=9,
+        domain=["project_code"],
+    )
+    noise_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n答辩奖励里把小机数据库当成亲密互动暗号。",
+        name="答辩奖励与亲密互动",
+        hours_ago=6,
+        importance=9,
+        domain=["恋爱", "成长"],
+    )
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr)
+    all_buckets = _run(bucket_mgr.list_all())
+    all_moments, grouped_moments, moment_edges = service._refresh_moment_graph(all_buckets)
+    seed_moment = dict(grouped_moments[seed_id][0])
+    seed_moment["exact_anchor_match"] = True
+    noise_moment = dict(grouped_moments[noise_id][0])
+    noise_moment["score"] = 0.99
+
+    related_memory, debug_rows = service._build_moment_diffused_memory_with_debug(
+        [seed_moment],
+        [seed_moment, noise_moment],
+        all_moments,
+        moment_edges,
+        "小机数据库 schema 和查询端点是什么来着",
+    )
+
+    target_rows = [row for row in debug_rows if row["bucket_id"] == noise_id]
+    assert related_memory == ""
+    assert target_rows
+    assert target_rows[0]["suppression_reason"] == "activated_axis_mismatch"
+
+
 def test_compound_query_preserves_distinct_anchor_cards(
     monkeypatch, test_config, bucket_mgr
 ):
@@ -10599,7 +11624,7 @@ def test_non_explicit_bucket_without_reliable_signal_is_suppressed(monkeypatch, 
     }
 
     assert not service._admit_bucket_for_recall("今天代码改得怎么样", item)
-    assert item["admission_reason"] == "low_recall_evidence"
+    assert item["admission_reason"] == "auto_vague_query_without_topic"
 
 
 def test_non_explicit_weak_code_seed_does_not_start_graph_diffusion(monkeypatch, test_config, bucket_mgr):
@@ -10652,14 +11677,16 @@ def test_non_explicit_weak_code_seed_does_not_start_graph_diffusion(monkeypatch,
     )
     injected = _joined_message_content(payload["messages"])
 
-    assert seed_id in recalled_ids
-    assert seed_id in debug["recalled_bucket_ids"]
+    assert seed_id not in recalled_ids
+    assert seed_id not in debug["recalled_bucket_ids"]
     assert target_id not in debug["diffused_bucket_ids"]
+    assert "Recalled Memory" not in injected
     assert "Haven写给小雨的520情书" not in injected
     assert "Diffused Memory" not in injected
+    assert debug["prepare_timing_debug"]["low_signal_auto_recall"] is True
 
 
-def test_non_explicit_strong_semantic_code_seed_can_start_graph_diffusion(monkeypatch, test_config, bucket_mgr):
+def test_non_explicit_strong_semantic_code_status_is_skipped_without_locatable_terms(monkeypatch, test_config, bucket_mgr):
     from memory_edges import MemoryEdgeStore
 
     cfg = _gateway_config(
@@ -10713,10 +11740,11 @@ def test_non_explicit_strong_semantic_code_seed_can_start_graph_diffusion(monkey
     )
     injected = _joined_message_content(payload["messages"])
 
-    assert seed_id in recalled_ids
-    assert target_id in debug["diffused_bucket_ids"]
-    assert "强语义扩散目标" in injected
-    assert "Diffused Memory" in injected
+    assert seed_id not in recalled_ids
+    assert target_id not in debug["diffused_bucket_ids"]
+    assert "强语义扩散目标" not in injected
+    assert "Diffused Memory" not in injected
+    assert debug["prepare_timing_debug"]["low_signal_auto_recall"] is True
 
 
 def test_non_explicit_low_score_moment_fallback_is_suppressed(monkeypatch, test_config, bucket_mgr):

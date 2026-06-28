@@ -219,6 +219,11 @@ recall:
 # 派生的关键词/共现索引，用于诊断和后续召回提示；手动从桶重建，本身不注入 Gateway。
 word_map:
   enabled: false
+  daily_rebuild_enabled: true          # When word_map.enabled=true, rebuild derived index once per day
+  daily_rebuild_hour: 4                # Local hour for nightly rebuild
+  daily_rebuild_minute: 30             # Local minute for nightly rebuild
+  daily_rebuild_include_archive: false # Keep nightly index focused on active buckets by default
+  daily_rebuild_check_interval_minutes: 15
   max_terms_per_bucket: 16
   edge_top_k: 10
   min_term_len: 2
@@ -337,6 +342,9 @@ gateway:
   skip_recent_rounds: 5
   cooldown_hours: 6
   cooldown_floor: 0.3
+  semantic_session_dedupe_enabled: true
+  semantic_session_dedupe_threshold: 0.90
+  semantic_session_dedupe_lexical_threshold: 0.82
   inject_total_budget: 1200
   core_memory_budget: 0
   recent_context_budget: 300

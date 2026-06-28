@@ -2448,11 +2448,31 @@ def _identity_seed_alias_terms() -> set[str]:
     return terms
 
 
-def _refresh_word_map_private_terms() -> list[str]:
+def _refresh_word_map_private_terms(store: WordMapStore | None = None) -> list[str]:
     terms = _identity_seed_alias_terms()
+    target = store or word_map_store
     if terms:
-        word_map_store.private_terms |= terms
+        target.private_terms |= terms
     return sorted(terms)
+
+
+async def _rebuild_word_map_index(
+    store: WordMapStore,
+    manager: BucketManager,
+    *,
+    include_archive: bool = False,
+) -> dict:
+    private_terms = _refresh_word_map_private_terms(store)
+    buckets = await manager.list_all(include_archive=include_archive)
+    buckets = [bucket for bucket in buckets if not is_self_anchor_bucket(bucket)]
+    stats = store.rebuild(buckets)
+    return {
+        "status": "rebuilt",
+        "bucket_count": len(buckets),
+        "include_archive": include_archive,
+        "stats": stats,
+        "private_terms_excluded": private_terms,
+    }
 
 
 def _word_map_payload(nodes_limit: int = 50, edges_limit: int = 50) -> dict:
@@ -2463,6 +2483,47 @@ def _word_map_payload(nodes_limit: int = 50, edges_limit: int = 50) -> dict:
         "edges": word_map_store.list_edges(_int_between(edges_limit, 50, 1, 500)),
         "private_terms_excluded": _refresh_word_map_private_terms(),
     }
+
+
+def _word_map_daily_rebuild_settings(config_arg: dict | None = None) -> dict[str, int | bool]:
+    cfg_source = config_arg if isinstance(config_arg, dict) else config
+    word_map_cfg = cfg_source.get("word_map", {}) if isinstance(cfg_source.get("word_map", {}), dict) else {}
+    return {
+        "enabled": _bool_value(word_map_cfg.get("enabled"), False)
+        and _bool_value(word_map_cfg.get("daily_rebuild_enabled"), True),
+        "hour": _int_between(word_map_cfg.get("daily_rebuild_hour"), 4, 0, 23),
+        "minute": _int_between(word_map_cfg.get("daily_rebuild_minute"), 30, 0, 59),
+        "include_archive": _bool_value(word_map_cfg.get("daily_rebuild_include_archive"), False),
+        "check_interval_seconds": _int_between(
+            word_map_cfg.get("daily_rebuild_check_interval_minutes"),
+            15,
+            1,
+            1440,
+        )
+        * 60,
+    }
+
+
+def _word_map_daily_target(now: datetime, settings: dict[str, int | bool]) -> datetime:
+    return now.replace(
+        hour=int(settings.get("hour") or 0),
+        minute=int(settings.get("minute") or 0),
+        second=0,
+        microsecond=0,
+    )
+
+
+def _word_map_should_run_daily_rebuild(
+    now: datetime,
+    last_run_date: str,
+    settings: dict[str, int | bool],
+) -> bool:
+    if not settings.get("enabled"):
+        return False
+    date_key = now.date().isoformat()
+    if last_run_date == date_key:
+        return False
+    return now >= _word_map_daily_target(now, settings)
 
 
 def _identity_semantics_payload(alias_limit: int = 100) -> dict:
@@ -9623,18 +9684,13 @@ async def api_word_map_rebuild(request):
         include_archive = _bool_value(body.get("include_archive"), False)
         nodes_limit = _int_between(body.get("nodes"), 50, 1, 500)
         edges_limit = _int_between(body.get("edges"), 50, 1, 500)
-        private_terms = _refresh_word_map_private_terms()
-        buckets = await bucket_mgr.list_all(include_archive=include_archive)
-        buckets = [bucket for bucket in buckets if not is_self_anchor_bucket(bucket)]
-        stats = word_map_store.rebuild(buckets)
+        result = await _rebuild_word_map_index(
+            word_map_store,
+            bucket_mgr,
+            include_archive=include_archive,
+        )
         payload = _word_map_payload(nodes_limit, edges_limit)
-        payload.update({
-            "status": "rebuilt",
-            "bucket_count": len(buckets),
-            "include_archive": include_archive,
-            "stats": stats,
-            "private_terms_excluded": private_terms,
-        })
+        payload.update(result)
         return JSONResponse(payload)
     except Exception as e:
         logger.warning("Word Map rebuild failed: %s", e, exc_info=True)
@@ -11931,6 +11987,43 @@ if __name__ == "__main__":
             pt = threading.Thread(target=_start_portrait_scheduler, daemon=True)
             pt.start()
             logger.info("Portrait scheduler enabled / 画像定时器已启用")
+
+        async def _word_map_daily_rebuild_loop():
+            await asyncio.sleep(35)
+            local_bucket_mgr = BucketManager(config)
+            local_word_map_store = WordMapStore(config)
+            initial_settings = _word_map_daily_rebuild_settings(config)
+            initial_now = datetime.now()
+            last_run_date = (
+                initial_now.date().isoformat()
+                if _word_map_should_run_daily_rebuild(initial_now, "", initial_settings)
+                else ""
+            )
+            while True:
+                settings = _word_map_daily_rebuild_settings(config)
+                try:
+                    now = datetime.now()
+                    if _word_map_should_run_daily_rebuild(now, last_run_date, settings):
+                        result = await _rebuild_word_map_index(
+                            local_word_map_store,
+                            local_bucket_mgr,
+                            include_archive=bool(settings.get("include_archive")),
+                        )
+                        last_run_date = now.date().isoformat()
+                        logger.info("Word Map daily rebuild result / 词图每日重建结果: %s", result)
+                except Exception as e:
+                    logger.warning("Word Map daily rebuild failed / 词图每日重建失败: %s", e, exc_info=True)
+                await asyncio.sleep(int(settings.get("check_interval_seconds") or 900))
+
+        def _start_word_map_daily_rebuild_scheduler():
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_word_map_daily_rebuild_loop())
+
+        word_map_cfg = config.get("word_map", {}) if isinstance(config.get("word_map", {}), dict) else {}
+        if _bool_value(word_map_cfg.get("daily_rebuild_enabled"), True):
+            wt = threading.Thread(target=_start_word_map_daily_rebuild_scheduler, daemon=True)
+            wt.start()
+            logger.info("Word Map daily rebuild scheduler started / 词图每日重建定时器已启动")
 
         async def _dream_loop():
             await asyncio.sleep(30)
