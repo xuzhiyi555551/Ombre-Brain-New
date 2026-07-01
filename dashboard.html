@@ -3640,6 +3640,7 @@ function getBucketEventDate(bucket) {
   if (bucket.event_date) return String(bucket.event_date).slice(0, 10);
   var meta = bucketMetadataView(bucket);
   if (meta.event_date) return String(meta.event_date).slice(0, 10);
+  if (bucket.created) return String(bucket.created).slice(0, 10);
   return '';
 }
 
@@ -3688,6 +3689,16 @@ function bucketLegacyDomain(bucket) {
   }).filter(Boolean) : [];
 }
 
+function isProfileFactBucket(bucket) {
+  if (!bucket) return false;
+  var tags = bucketTags(bucket);
+  var source = String(bucket.source || bucketMetadataView(bucket).source || '').trim();
+  return tags.includes('profile_fact')
+    || tags.includes('画像事实')
+    || bucketKind(bucket) === 'profile_fact'
+    || source === 'profile_fact';
+}
+
 function isSelfAnchorBucket(bucket) {
   if (!bucket) return false;
   if (bucket.self_anchor) return true;
@@ -3697,7 +3708,7 @@ function isSelfAnchorBucket(bucket) {
 }
 
 function isReflectionEventBucket(bucket) {
-  if (!bucket || isDailyImpressionBucket(bucket) || isSelfAnchorBucket(bucket)) return false;
+  if (!bucket || isDailyImpressionBucket(bucket) || isSelfAnchorBucket(bucket) || isProfileFactBucket(bucket)) return false;
   if (bucket.type === 'feel') return false;
   if (bucket.resolved || bucket.digested) return false;
   return /^\d{4}-\d{2}-\d{2}$/.test(getBucketEventDate(bucket));
@@ -3824,19 +3835,35 @@ function reflectionEntry(bucket, index) {
   '</div>';
 }
 
-function reflectionSourceChips(detail) {
+function isReflectionSourceBucket(bucket, reflectionDate) {
+  if (!bucket || isDailyImpressionBucket(bucket) || isSelfAnchorBucket(bucket) || isProfileFactBucket(bucket)) return false;
+  if (bucket.type === 'feel') return false;
+  var sourceDate = getBucketEventDate(bucket);
+  return Boolean(sourceDate) && (!reflectionDate || sourceDate === reflectionDate);
+}
+
+function reflectionSourceChips(detail, reflectionDate) {
   var meta = detail && detail.metadata ? detail.metadata : {};
   var sourceIds = Array.isArray(meta.source_bucket_ids) ? meta.source_bucket_ids : [];
   var rawIds = Array.isArray(meta.source_raw_event_ids) ? meta.source_raw_event_ids : [];
   var turnIds = Array.isArray(meta.source_conversation_turn_ids) ? meta.source_conversation_turn_ids : [];
   var chips = [];
-  sourceIds.slice(0, 8).forEach(function(id) {
+  var filteredSources = [];
+  sourceIds.forEach(function(id) {
     var textId = String(id || '');
+    if (!textId) return;
     var source = allBuckets.find(function(bucket) { return String(bucket.id) === textId; });
+    if (source && !isReflectionSourceBucket(source, reflectionDate)) return;
     var label = source ? (source.name || source.id) : textId;
+    filteredSources.push({ id: textId, label: label });
+  });
+  if (filteredSources.length) {
+    chips.push('<span class="reflection-source-note">日印象参考记忆桶</span>');
+  }
+  filteredSources.slice(0, 8).forEach(function(source) {
     chips.push(
-      '<button type="button" class="reflection-source-chip" onclick="showDetail(\'' + jsString(textId) + '\')">' +
-      esc(label) +
+      '<button type="button" class="reflection-source-chip" onclick="showDetail(\'' + jsString(source.id) + '\')">' +
+      esc(source.label) +
       '</button>'
     );
   });
@@ -3863,7 +3890,7 @@ async function hydrateReflectionEntryContents(impressions) {
       }
       var sources = document.getElementById('reflection-entry-sources-' + i);
       if (sources && sources.dataset.bucketId === id) {
-        sources.innerHTML = reflectionSourceChips(detail);
+        sources.innerHTML = reflectionSourceChips(detail, bucket.reflection_date);
       }
     } catch (e) {}
   }

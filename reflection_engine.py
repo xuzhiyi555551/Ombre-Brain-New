@@ -1081,12 +1081,26 @@ class ReflectionEngine:
             updated = self._to_local(meta.get("updated_at"))
             created_in_window = bool(created and start <= created <= end)
             updated_in_window = bool(updated and start <= updated <= end)
+            material_date = self._bucket_material_datetime(meta) if period == "daily" else None
+            is_profile_fact = self._is_profile_fact_metadata(meta, tags)
             if period == "weekly" and meta.get("type") == "feel" and "daily_impression" in tags and created_in_window:
                 daily_impressions.append(self._memory_payload(bucket, content_limit=360))
+            elif period == "daily" and meta.get("type") != "feel":
+                if (
+                    material_date
+                    and start <= material_date <= end
+                    and not is_profile_fact
+                ):
+                    buckets.append(self._memory_payload(bucket, content_limit=420))
             elif meta.get("type") != "feel" and (created_in_window or updated_in_window):
                 buckets.append(self._memory_payload(bucket, content_limit=420))
             if tags & {"commitment", "todo", "wish"} and not meta.get("resolved"):
-                commitments.append(self._memory_payload(bucket, content_limit=260))
+                if period != "daily" or (
+                    material_date
+                    and start <= material_date <= end
+                    and not is_profile_fact
+                ):
+                    commitments.append(self._memory_payload(bucket, content_limit=260))
 
         if period == "daily" and self.daily_conversation_turn_limit > 0 and conversation_turn_store:
             profile_id = str(getattr(persona_engine, "profile_id", "") or "default")
@@ -2349,6 +2363,21 @@ class ReflectionEngine:
             "created": meta.get("created", ""),
             "content": strip_wikilinks(bucket.get("content", ""))[:content_limit],
         }
+
+    def _bucket_material_datetime(self, meta: dict) -> datetime | None:
+        return self._to_local(meta.get("date") or meta.get("event_date") or meta.get("created"))
+
+    @staticmethod
+    def _is_profile_fact_metadata(meta: dict, tags: set[str] | None = None) -> bool:
+        tag_values = tags if tags is not None else {str(tag) for tag in meta.get("tags", [])}
+        if tag_values & {"profile_fact", "画像事实"}:
+            return True
+        markers = {
+            str(meta.get("kind") or ""),
+            str(meta.get("source") or ""),
+            str(meta.get("canonical_domain") or ""),
+        }
+        return "profile_fact" in markers
 
     def _period_window(self, period: str, now_local: datetime) -> tuple[datetime, datetime]:
         if period == "weekly":

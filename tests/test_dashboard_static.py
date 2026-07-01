@@ -86,6 +86,20 @@ def test_dashboard_feel_filter_excludes_daily_impressions():
     assert "buckets.filter(isDailyImpressionBucket)" in html
 
 
+def test_dashboard_reflection_events_use_created_fallback_and_filter_profile_sources():
+    html = Path("dashboard.html").read_text(encoding="utf-8")
+    event_date_block = html.split("function getBucketEventDate", 1)[1].split("function isDailyImpressionBucket", 1)[0]
+    source_block = html.split("function reflectionSourceChips", 1)[1].split("async function hydrateReflectionEntryContents", 1)[0]
+
+    assert "if (bucket.created) return String(bucket.created).slice(0, 10);" in event_date_block
+    assert "function isProfileFactBucket" in html
+    assert "isProfileFactBucket(bucket)" in html
+    assert "function isReflectionSourceBucket" in html
+    assert "sourceDate === reflectionDate" in html
+    assert "日印象参考记忆桶" in source_block
+    assert "reflectionSourceChips(detail, bucket.reflection_date)" in html
+
+
 def test_dashboard_exposes_darkroom_door_without_release_or_body_fields():
     html = Path("dashboard.html").read_text(encoding="utf-8")
     door_block = html.split('id="darkroom-door"', 1)[1].split('<div class="search-bar">', 1)[0]

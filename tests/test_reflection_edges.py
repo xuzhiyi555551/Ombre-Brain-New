@@ -650,7 +650,17 @@ async def test_run_due_daily_uses_complete_previous_day(test_config, monkeypatch
         updated_at="2026-06-01T15:00:00+08:00",
     )
     await bucket_mgr.create(
-        content="这条旧记忆在昨天更新，也应该进入日印象材料。",
+        content="昨天深夜，小雨确认日印象按当天发生来整理。",
+        tags=["日印象"],
+        importance=6,
+        domain=["数字"],
+        name="昨天深夜的记忆",
+        created="2026-06-01T23:30:00+08:00",
+        last_active="2026-06-01T23:30:00+08:00",
+        updated_at="2026-06-01T23:30:00+08:00",
+    )
+    await bucket_mgr.create(
+        content="这条旧记忆在昨天更新，但不是昨天发生。",
         tags=["日印象"],
         importance=6,
         domain=["数字"],
@@ -659,15 +669,41 @@ async def test_run_due_daily_uses_complete_previous_day(test_config, monkeypatch
         last_active="2026-05-30T09:00:00+08:00",
         updated_at="2026-06-01T23:00:00+08:00",
     )
+    await bucket_mgr.create(
+        content="### fact\n小雨喜欢日印象页面显示更清楚。",
+        tags=["profile_fact", "profile_preference"],
+        importance=7,
+        domain=["画像"],
+        name="日印象画像事实",
+        source="profile_fact",
+        created="2026-06-01T21:00:00+08:00",
+        last_active="2026-06-01T21:00:00+08:00",
+        updated_at="2026-06-01T21:00:00+08:00",
+    )
+    await bucket_mgr.create(
+        content="这条旧承诺在昨天更新，但不该作为当天日印象材料。",
+        tags=["commitment"],
+        importance=7,
+        domain=["恋爱"],
+        name="昨天更新的旧承诺",
+        created="2026-05-30T10:00:00+08:00",
+        last_active="2026-05-30T10:00:00+08:00",
+        updated_at="2026-06-01T21:30:00+08:00",
+    )
 
     results = await engine.run_due(bucket_mgr)
     bucket = await bucket_mgr.get("reflection_daily_2026-06-01")
 
     assert results[0]["date"] == "2026-06-01"
     assert results[0]["materials"]["buckets"] == 5
+    assert results[0]["materials"]["commitments"] == 0
     assert "昨天早上的记忆" in bucket["content"]
     assert "昨天晚上的记忆" in bucket["content"]
-    assert "昨天更新的旧记忆" in bucket["content"]
+    assert "昨天深夜的记忆" in bucket["content"]
+    assert "昨天更新的旧记忆" not in bucket["content"]
+    assert "日印象画像事实" not in bucket["content"]
+    assert "昨天更新的旧承诺" not in bucket["content"]
+    assert len(bucket["metadata"]["source_bucket_ids"]) == 5
 
 
 @pytest.mark.asyncio
