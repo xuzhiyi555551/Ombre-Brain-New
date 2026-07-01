@@ -5142,6 +5142,14 @@ def test_gateway_hook_recall_skips_empty_cards(monkeypatch, test_config, bucket_
     assert cards[0]["text"] == "usable note"
     additional_context = service._render_hook_recall_additional_context(cards)
     assert "[reading_note id=ombre:filled#m1]" in additional_context
+    assert (
+        "how_to_apply: possible related memory; use only if it helps answer the current message, "
+        "ignore if irrelevant/conflicting."
+    ) in additional_context
+    assert "why_read:" not in additional_context
+    assert "use_mode:" not in additional_context
+    assert "confidence:" not in additional_context
+    assert "domain:" not in additional_context
     assert "ombre:empty#m2" not in additional_context
 
 
