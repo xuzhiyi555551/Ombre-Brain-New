@@ -751,11 +751,11 @@ class WordMapStore:
                 """
                 SELECT term, kind, bucket_count, weight
                 FROM word_nodes
-                WHERE bucket_count <= ?
+                WHERE bucket_count <= ? AND term LIKE ?
                 ORDER BY bucket_count ASC, LENGTH(term) ASC, weight DESC, term ASC
-                LIMIT 500
+                LIMIT 80
                 """,
-                (self.rare_name_max_bucket_count,),
+                (self.rare_name_max_bucket_count, f"%{source_term}%"),
             ).fetchall()
             for row in rows:
                 term = self._clean_term(row["term"])
