@@ -290,6 +290,14 @@ def load_config(config_path: str = None) -> dict:
             "semantic_session_dedupe_enabled": True,
             "semantic_session_dedupe_threshold": 0.90,
             "semantic_session_dedupe_lexical_threshold": 0.82,
+            "memory_sentinel_enabled": True,
+            "memory_sentinel_llm_enabled": False,
+            "memory_sentinel_model": "",
+            "memory_sentinel_context_turns": 3,
+            "domain_sentinel_enabled": True,
+            "domain_sentinel_model": "Qwen/Qwen3.5-4B",
+            "domain_sentinel_max_tokens": 260,
+            "domain_sentinel_enable_thinking": False,
             "inject_total_budget": 1200,
             "core_memory_budget": 0,
             "recent_context_budget": 300,
@@ -403,6 +411,8 @@ def load_config(config_path: str = None) -> dict:
             "daily_chat_memory_hour": 0,
             "daily_chat_memory_turn_limit": 0,
             "daily_chat_memory_max_per_day": 3,
+            "daily_chat_memory_candidate_model": "Qwen/Qwen3.5-4B",
+            "daily_chat_memory_candidate_thinking_mode": "disabled",
         },
         "portrait": {
             "enabled": True,
@@ -650,6 +660,10 @@ def load_config(config_path: str = None) -> dict:
             if item.strip()
         ]
 
+    env_domain_sentinel_model = os.environ.get("OMBRE_DOMAIN_SENTINEL_MODEL", "")
+    if env_domain_sentinel_model:
+        config.setdefault("gateway", {})["domain_sentinel_model"] = env_domain_sentinel_model
+
     env_persona_api_key = os.environ.get("OMBRE_PERSONA_API_KEY", "")
     if env_persona_api_key:
         config.setdefault("persona", {})["api_key"] = env_persona_api_key
@@ -673,6 +687,10 @@ def load_config(config_path: str = None) -> dict:
     env_reflection_model = os.environ.get("OMBRE_REFLECTION_MODEL", "")
     if env_reflection_model:
         config.setdefault("reflection", {})["model"] = env_reflection_model
+
+    env_reflection_candidate_model = os.environ.get("OMBRE_REFLECTION_CANDIDATE_MODEL", "")
+    if env_reflection_candidate_model:
+        config.setdefault("reflection", {})["daily_chat_memory_candidate_model"] = env_reflection_candidate_model
 
     env_diary_mcp_url = os.environ.get("OMBRE_DIARY_MCP_URL", "")
     if env_diary_mcp_url:

@@ -111,7 +111,7 @@ from memory_layers import (
     moment_runtime_gate_debug,
     normalize_write_classification,
 )
-from memory_metadata import normalize_memory_metadata
+from memory_metadata import domain_options, normalize_domain_key, normalize_memory_metadata
 from recall_policy import RecallPolicy, diffusion_seed_topic_term_has_specific_residue
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
@@ -2366,6 +2366,7 @@ def _bucket_read_payload(bucket: dict) -> dict:
         "type",
         "domain",
         "tags",
+        "facets",
         "importance",
         "valence",
         "arousal",
@@ -2417,6 +2418,7 @@ def _bucket_summary_payload(bucket: dict) -> dict:
         "type": meta.get("type", "dynamic"),
         "domain": meta.get("domain", []),
         "tags": meta.get("tags", []),
+        "facets": meta.get("facets", []),
         "metadata_view": metadata_view,
         **metadata_view,
         "importance": meta.get("importance", 5),
@@ -2453,6 +2455,7 @@ def _bucket_light_payload(bucket: dict) -> dict:
         "type": meta.get("type", "dynamic"),
         "domain": meta.get("domain", []),
         "tags": meta.get("tags", []),
+        "facets": meta.get("facets", []),
         "source": meta.get("source", ""),
         "importance": meta.get("importance", 5),
         "confidence": meta.get("confidence", 0.5),
@@ -2471,7 +2474,14 @@ def _bucket_light_payload(bucket: dict) -> dict:
 
 
 def _bucket_light_sort_key(item: dict) -> str:
-    return str(item.get("created") or item.get("last_active") or "")
+    return str(item.get("updated_at") or item.get("last_active") or item.get("created") or "")
+
+
+def _bucket_dashboard_sort_key(item: dict) -> tuple[str, str]:
+    return (
+        str(item.get("updated_at") or item.get("last_active") or item.get("created") or ""),
+        str(item.get("id") or ""),
+    )
 
 
 def _identity_seed_alias_terms() -> set[str]:
@@ -9178,6 +9188,7 @@ async def api_buckets(request):
                 "type": meta.get("type", "dynamic"),
                 "domain": meta.get("domain", []),
                 "tags": meta.get("tags", []),
+                "facets": meta.get("facets", []),
                 "metadata_view": metadata_view,
                 **metadata_view,
                 "source": meta.get("source", ""),
@@ -9205,7 +9216,7 @@ async def api_buckets(request):
                 "score": decay_engine.calculate_score(meta),
                 "content_preview": strip_wikilinks(b.get("content", ""))[:200],
             })
-        result.sort(key=lambda x: x["score"], reverse=True)
+        result.sort(key=_bucket_dashboard_sort_key, reverse=True)
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -9235,6 +9246,16 @@ async def api_buckets_light(request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/domain-taxonomy", methods=["GET"])
+async def api_domain_taxonomy(request):
+    """Return canonical domain keys and display labels for dashboard controls."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    return JSONResponse({"domains": domain_options()})
 
 
 @mcp.custom_route("/api/portrait-state", methods=["GET"])
@@ -9908,6 +9929,183 @@ async def api_buckets_delete(request):
         results.append(result)
 
     return JSONResponse({**summary, "results": results})
+
+
+def _unique_clean_list(value, *, limit: int = 40) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = re.split(r"[,，、\n]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw = value
+    else:
+        raw = [value]
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text[:64])
+        if len(items) >= limit:
+            break
+    return items
+
+
+def _merge_metadata_list(current, *, add: list[str] | None = None, remove: list[str] | None = None) -> tuple[list[str], bool]:
+    values = _unique_clean_list(current, limit=120)
+    original = list(values)
+    remove_set = {str(item) for item in (remove or [])}
+    if remove_set:
+        values = [item for item in values if item not in remove_set]
+    for item in add or []:
+        if item not in values:
+            values.append(item)
+    return values, values != original
+
+
+@mcp.custom_route("/api/buckets/bulk-update", methods=["POST"])
+async def api_buckets_bulk_update(request):
+    """Bulk-edit dashboard bucket metadata and archive state."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "json body must be an object"}, status_code=400)
+
+    raw_ids = body.get("bucket_ids", [])
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return JSONResponse({"error": "bucket_ids must be a non-empty list"}, status_code=400)
+    if len(raw_ids) > 300:
+        return JSONResponse({"error": "too many bucket_ids"}, status_code=400)
+
+    bucket_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in raw_ids:
+        bucket_id = str(raw_id or "").strip()
+        if bucket_id in seen:
+            continue
+        seen.add(bucket_id)
+        bucket_ids.append(bucket_id)
+
+    domain_key = ""
+    if "domain" in body:
+        domain_key = normalize_domain_key(body.get("domain"))
+        if not domain_key:
+            return JSONResponse({"error": "invalid domain"}, status_code=400)
+
+    tags_add = _unique_clean_list(body.get("tags_add"))
+    tags_remove = _unique_clean_list(body.get("tags_remove"))
+    facets_add = _unique_clean_list(body.get("facets_add"))
+    facets_remove = _unique_clean_list(body.get("facets_remove"))
+    status = str(body.get("status") or "").strip().lower()
+    if status and status not in {"archived", "active"}:
+        return JSONResponse({"error": "status must be archived or active"}, status_code=400)
+
+    if not any([domain_key, tags_add, tags_remove, facets_add, facets_remove, status]):
+        return JSONResponse({"error": "no bulk operation requested"}, status_code=400)
+
+    summary = {"matched": 0, "changed": 0, "unchanged": 0, "not_found": 0, "invalid": 0, "failed": 0}
+    changed_ids: list[str] = []
+    results: list[dict] = []
+
+    for bucket_id in bucket_ids:
+        if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
+            summary["invalid"] += 1
+            results.append({"id": bucket_id, "status": "invalid", "reason": "invalid_bucket_id"})
+            continue
+
+        bucket = await bucket_mgr.get(bucket_id)
+        if not bucket:
+            summary["not_found"] += 1
+            results.append({"id": bucket_id, "status": "not_found", "reason": "not_found"})
+            continue
+        summary["matched"] += 1
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+
+        changed = False
+        update_kwargs: dict = {}
+
+        if domain_key and meta.get("domain") != [domain_key]:
+            update_kwargs["domain"] = [domain_key]
+            changed = True
+
+        tags, tags_changed = _merge_metadata_list(meta.get("tags", []), add=tags_add, remove=tags_remove)
+        if tags_changed:
+            update_kwargs["tags"] = tags
+            changed = True
+
+        facets, facets_changed = _merge_metadata_list(meta.get("facets", []), add=facets_add, remove=facets_remove)
+        if facets_changed:
+            update_kwargs["facets"] = facets
+            changed = True
+
+        if update_kwargs:
+            ok = await bucket_mgr.update(
+                bucket_id,
+                **update_kwargs,
+                last_active=meta.get("last_active") or meta.get("created"),
+            )
+            if not ok:
+                summary["failed"] += 1
+                results.append({"id": bucket_id, "status": "failed", "reason": "update_failed"})
+                continue
+
+        if status == "archived":
+            current = await bucket_mgr.get(bucket_id)
+            current_type = ((current or {}).get("metadata") or {}).get("type")
+            if current_type != "archived":
+                ok = await bucket_mgr.archive(bucket_id)
+                if not ok:
+                    summary["failed"] += 1
+                    results.append({"id": bucket_id, "status": "failed", "reason": "archive_failed"})
+                    continue
+                changed = True
+        elif status == "active":
+            current = await bucket_mgr.get(bucket_id)
+            current_meta = (current or {}).get("metadata") or {}
+            if current_meta.get("type") == "archived":
+                ok = await bucket_mgr.activate(bucket_id)
+                if not ok:
+                    summary["failed"] += 1
+                    results.append({"id": bucket_id, "status": "failed", "reason": "activate_failed"})
+                    continue
+                changed = True
+            elif current_meta.get("active") is False or current_meta.get("resolved") or current_meta.get("deprecated"):
+                ok = await bucket_mgr.update(
+                    bucket_id,
+                    active=True,
+                    deprecated=False,
+                    resolved=False,
+                    last_active=current_meta.get("last_active") or current_meta.get("created"),
+                )
+                if not ok:
+                    summary["failed"] += 1
+                    results.append({"id": bucket_id, "status": "failed", "reason": "activate_failed"})
+                    continue
+                changed = True
+
+        if changed:
+            summary["changed"] += 1
+            changed_ids.append(bucket_id)
+            results.append({"id": bucket_id, "status": "changed"})
+        else:
+            summary["unchanged"] += 1
+            results.append({"id": bucket_id, "status": "unchanged"})
+
+    return JSONResponse({
+        **summary,
+        "changed_ids": changed_ids,
+        "changed_count": len(changed_ids),
+        "results": results,
+    })
 
 
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["GET"])
@@ -10746,8 +10944,16 @@ async def api_config_get(request):
             "recalled_memory_budget": gateway_cfg.get("recalled_memory_budget", 400),
             "related_memory_budget": gateway_cfg.get("related_memory_budget", 220),
             "memory_sentinel_enabled": _bool_value(gateway_cfg.get("memory_sentinel_enabled"), True),
+            "memory_sentinel_llm_enabled": _bool_value(gateway_cfg.get("memory_sentinel_llm_enabled"), True),
             "memory_sentinel_model": gateway_cfg.get("memory_sentinel_model", ""),
             "memory_sentinel_context_turns": gateway_cfg.get("memory_sentinel_context_turns", 3),
+            "domain_sentinel_enabled": _bool_value(gateway_cfg.get("domain_sentinel_enabled"), True),
+            "domain_sentinel_model": gateway_cfg.get("domain_sentinel_model", "Qwen/Qwen3.5-4B"),
+            "domain_sentinel_enable_thinking": _bool_value(
+                gateway_cfg.get("domain_sentinel_enable_thinking"),
+                False,
+            ),
+            "domain_sentinel_max_tokens": gateway_cfg.get("domain_sentinel_max_tokens", 260),
             "current_inner_state_interval_rounds": gateway_cfg.get("current_inner_state_interval_rounds", 0),
             "direct_render_mode": _normalize_direct_render_mode(gateway_cfg.get("direct_render_mode", "auto")),
             "retrieval_mode": _normalize_retrieval_mode(gateway_cfg.get("retrieval_mode", "graph")),
@@ -10890,6 +11096,20 @@ async def api_config_get(request):
                     "daily_chat_memory_max_per_day",
                     getattr(reflection_engine, "daily_chat_memory_max_per_day", 3),
                 )
+            ),
+            "daily_chat_memory_candidate_model": str(
+                reflection_cfg.get(
+                    "daily_chat_memory_candidate_model",
+                    getattr(reflection_engine, "daily_chat_memory_candidate_model", ""),
+                )
+                or ""
+            ),
+            "daily_chat_memory_candidate_thinking_mode": str(
+                reflection_cfg.get(
+                    "daily_chat_memory_candidate_thinking_mode",
+                    getattr(reflection_engine, "daily_chat_memory_candidate_thinking_mode", "disabled"),
+                )
+                or "disabled"
             ),
             "model": getattr(reflection_engine, "model", reflection_cfg.get("model", "")),
             "base_url": getattr(reflection_engine, "base_url", reflection_cfg.get("base_url", "")),
@@ -11177,6 +11397,10 @@ async def api_config_update(request):
             gateway_cfg["memory_sentinel_enabled"] = _bool_value(g["memory_sentinel_enabled"], True)
             gateway_hot_update_body["memory_sentinel_enabled"] = gateway_cfg["memory_sentinel_enabled"]
             updated.append("gateway.memory_sentinel_enabled")
+        if "memory_sentinel_llm_enabled" in g:
+            gateway_cfg["memory_sentinel_llm_enabled"] = _bool_value(g["memory_sentinel_llm_enabled"], True)
+            gateway_hot_update_body["memory_sentinel_llm_enabled"] = gateway_cfg["memory_sentinel_llm_enabled"]
+            updated.append("gateway.memory_sentinel_llm_enabled")
         if "memory_sentinel_model" in g:
             gateway_cfg["memory_sentinel_model"] = str(g["memory_sentinel_model"] or "").strip()
             gateway_hot_update_body["memory_sentinel_model"] = gateway_cfg["memory_sentinel_model"]
@@ -11190,6 +11414,32 @@ async def api_config_update(request):
             )
             gateway_hot_update_body["memory_sentinel_context_turns"] = gateway_cfg["memory_sentinel_context_turns"]
             updated.append("gateway.memory_sentinel_context_turns")
+        if "domain_sentinel_enabled" in g:
+            gateway_cfg["domain_sentinel_enabled"] = _bool_value(g["domain_sentinel_enabled"], True)
+            gateway_hot_update_body["domain_sentinel_enabled"] = gateway_cfg["domain_sentinel_enabled"]
+            updated.append("gateway.domain_sentinel_enabled")
+        if "domain_sentinel_model" in g:
+            gateway_cfg["domain_sentinel_model"] = str(g["domain_sentinel_model"] or "").strip()
+            gateway_hot_update_body["domain_sentinel_model"] = gateway_cfg["domain_sentinel_model"]
+            updated.append("gateway.domain_sentinel_model")
+        if "domain_sentinel_enable_thinking" in g:
+            gateway_cfg["domain_sentinel_enable_thinking"] = _bool_value(
+                g["domain_sentinel_enable_thinking"],
+                False,
+            )
+            gateway_hot_update_body["domain_sentinel_enable_thinking"] = gateway_cfg[
+                "domain_sentinel_enable_thinking"
+            ]
+            updated.append("gateway.domain_sentinel_enable_thinking")
+        if "domain_sentinel_max_tokens" in g:
+            gateway_cfg["domain_sentinel_max_tokens"] = _int_between(
+                g["domain_sentinel_max_tokens"],
+                260,
+                64,
+                800,
+            )
+            gateway_hot_update_body["domain_sentinel_max_tokens"] = gateway_cfg["domain_sentinel_max_tokens"]
+            updated.append("gateway.domain_sentinel_max_tokens")
         if "current_inner_state_interval_rounds" in g:
             gateway_cfg["current_inner_state_interval_rounds"] = max(
                 0,
@@ -11391,6 +11641,19 @@ async def api_config_update(request):
                 10,
             )
             updated.append("reflection.daily_chat_memory_max_per_day")
+        if "daily_chat_memory_candidate_model" in r:
+            reflection_cfg["daily_chat_memory_candidate_model"] = str(
+                r["daily_chat_memory_candidate_model"] or ""
+            ).strip()
+            updated.append("reflection.daily_chat_memory_candidate_model")
+        if "daily_chat_memory_candidate_thinking_mode" in r:
+            candidate_thinking = str(
+                r.get("daily_chat_memory_candidate_thinking_mode") or "disabled"
+            ).strip().lower()
+            if candidate_thinking not in {"", "enabled", "disabled"}:
+                candidate_thinking = "disabled"
+            reflection_cfg["daily_chat_memory_candidate_thinking_mode"] = candidate_thinking or "disabled"
+            updated.append("reflection.daily_chat_memory_candidate_thinking_mode")
         if "api_key" in r and r["api_key"]:
             reflection_cfg["api_key"] = str(r["api_key"])
             os.environ["OMBRE_REFLECTION_API_KEY"] = reflection_cfg["api_key"]
@@ -11400,6 +11663,8 @@ async def api_config_update(request):
             os.environ["OMBRE_REFLECTION_BASE_URL"] = reflection_cfg["base_url"]
         if "model" in r and reflection_cfg.get("model"):
             os.environ["OMBRE_REFLECTION_MODEL"] = reflection_cfg["model"]
+        if "daily_chat_memory_candidate_model" in r and reflection_cfg.get("daily_chat_memory_candidate_model"):
+            os.environ["OMBRE_REFLECTION_CANDIDATE_MODEL"] = reflection_cfg["daily_chat_memory_candidate_model"]
         reflection_engine = ReflectionEngine(config)
 
     # --- Portrait maintainer config ---
@@ -11606,6 +11871,11 @@ async def api_config_update(request):
                         body["gateway"]["memory_sentinel_enabled"],
                         True,
                     )
+                if "memory_sentinel_llm_enabled" in body["gateway"]:
+                    sc_gateway["memory_sentinel_llm_enabled"] = _bool_value(
+                        body["gateway"]["memory_sentinel_llm_enabled"],
+                        True,
+                    )
                 if "memory_sentinel_model" in body["gateway"]:
                     sc_gateway["memory_sentinel_model"] = str(
                         body["gateway"]["memory_sentinel_model"] or ""
@@ -11616,6 +11886,27 @@ async def api_config_update(request):
                         3,
                         0,
                         8,
+                    )
+                if "domain_sentinel_enabled" in body["gateway"]:
+                    sc_gateway["domain_sentinel_enabled"] = _bool_value(
+                        body["gateway"]["domain_sentinel_enabled"],
+                        True,
+                    )
+                if "domain_sentinel_model" in body["gateway"]:
+                    sc_gateway["domain_sentinel_model"] = str(
+                        body["gateway"]["domain_sentinel_model"] or ""
+                    ).strip()
+                if "domain_sentinel_enable_thinking" in body["gateway"]:
+                    sc_gateway["domain_sentinel_enable_thinking"] = _bool_value(
+                        body["gateway"]["domain_sentinel_enable_thinking"],
+                        False,
+                    )
+                if "domain_sentinel_max_tokens" in body["gateway"]:
+                    sc_gateway["domain_sentinel_max_tokens"] = _int_between(
+                        body["gateway"]["domain_sentinel_max_tokens"],
+                        260,
+                        64,
+                        800,
                     )
                 if "current_inner_state_interval_rounds" in body["gateway"]:
                     sc_gateway["current_inner_state_interval_rounds"] = max(
@@ -11790,6 +12081,17 @@ async def api_config_update(request):
                         0,
                         10,
                     )
+                if "daily_chat_memory_candidate_model" in body["reflection"]:
+                    sc_reflection["daily_chat_memory_candidate_model"] = str(
+                        body["reflection"].get("daily_chat_memory_candidate_model") or ""
+                    ).strip()
+                if "daily_chat_memory_candidate_thinking_mode" in body["reflection"]:
+                    candidate_thinking = str(
+                        body["reflection"].get("daily_chat_memory_candidate_thinking_mode") or "disabled"
+                    ).strip().lower()
+                    if candidate_thinking not in {"", "enabled", "disabled"}:
+                        candidate_thinking = "disabled"
+                    sc_reflection["daily_chat_memory_candidate_thinking_mode"] = candidate_thinking or "disabled"
                 # Never persist api_key to yaml (use env var)
 
             if "portrait" in body:

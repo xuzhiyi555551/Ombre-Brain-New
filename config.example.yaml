@@ -213,6 +213,30 @@ recall_thresholds:
 recall:
   query_resurface_enabled: false      # true allows query breath() to append a random dormant memory when direct/related recall is sparse
 
+# --- Canonical domains / 主域表 ---
+# Store the key in bucket metadata; Dashboard displays label_zh.
+# 桶里存 key，Dashboard 显示中文名。
+domain_taxonomy:
+  display_language: zh
+  domains:
+    - { key: "relationship.identity", label_zh: "关系身份" }
+    - { key: "relationship.intimacy", label_zh: "亲密" }
+    - { key: "relationship.symbol", label_zh: "暗号意象" }
+    - { key: "relationship.communication", label_zh: "沟通方式" }
+    - { key: "relationship.weather", label_zh: "关系天气" }
+    - { key: "life.health", label_zh: "健康" }
+    - { key: "life.sleep", label_zh: "睡眠" }
+    - { key: "life.food", label_zh: "饮食" }
+    - { key: "life.outing", label_zh: "出行" }
+    - { key: "life.mood", label_zh: "心情" }
+    - { key: "life.schedule", label_zh: "日程" }
+    - { key: "life.social", label_zh: "现实人际" }
+    - { key: "project.companion_system", label_zh: "给哥哥搭东西" }
+    - { key: "project.work", label_zh: "工作" }
+    - { key: "project.academic", label_zh: "学业" }
+    - { key: "project.personal", label_zh: "个人项目" }
+    - { key: "general", label_zh: "通用" }
+
 # --- Word Map Lite / 派生词图 ---
 # Derived keyword/co-occurrence index for diagnostics and future recall hints.
 # It is rebuilt manually from buckets and does not inject anything into Gateway by itself.
@@ -357,6 +381,10 @@ gateway:
   memory_sentinel_llm_enabled: false # false = keep rule sentinel/searchable residue, skip the LLM grey-zone call
   memory_sentinel_model: ""         # empty = use dehydration.model via dehydration API
   memory_sentinel_context_turns: 3   # recent same-session turns for vague followups
+  domain_sentinel_enabled: true      # only opens likely domains + query; never decides should_recall
+  domain_sentinel_model: "Qwen/Qwen3.5-4B" # free small classifier; alternatives: THUDM/GLM-4-9B-0414, Qwen/Qwen3-8B
+  domain_sentinel_enable_thinking: false   # send enable_thinking=false for Qwen-style classifiers
+  domain_sentinel_max_tokens: 260
   date_persona_trace_enabled: true   # date words like 昨天/昨晚 add small same-day persona/original-turn trace
   date_persona_trace_budget: 220
   date_persona_trace_max_events: 5
@@ -462,6 +490,7 @@ gateway:
   #   OMBRE_GATEWAY_UPSTREAM_BASE_URL
   #   OMBRE_GATEWAY_UPSTREAM_MODEL
   #   OMBRE_GATEWAY_UPSTREAM_MODELS   # comma-separated model list for /v1/models
+  #   OMBRE_DOMAIN_SENTINEL_MODEL
   #   OMBRE_GATEWAY_DEEPSEEK_API_KEY  # example for gateway.upstreams[*].api_key_env
   #   OMBRE_GATEWAY_DEEPSEEK_API_KEY_1
   #   OMBRE_GATEWAY_DEEPSEEK_API_KEY_2
@@ -622,6 +651,8 @@ reflection:
   daily_chat_memory_hour: 0        # organize the previous day's Gateway chats after local midnight
   daily_chat_memory_turn_limit: 0  # 0 = use all raw_events for that date; >0 caps restored turns
   daily_chat_memory_max_per_day: 3 # conservative cap for selected long-term memory candidates
+  daily_chat_memory_candidate_model: "Qwen/Qwen3.5-4B" # cheap candidate extraction; reflection.model remains the stronger organizer
+  daily_chat_memory_candidate_thinking_mode: "disabled"
   persona_events_limit: 12         # selected and deduped; persona events supplement daily weather only
   persona_events_scan_limit: 80
   weekly_enabled: false            # weekly impressions are off by default; daily impressions remain
@@ -647,6 +678,7 @@ reflection:
   #   OMBRE_REFLECTION_API_KEY
   #   OMBRE_REFLECTION_BASE_URL
   #   OMBRE_REFLECTION_MODEL
+  #   OMBRE_REFLECTION_CANDIDATE_MODEL
   #   OMBRE_DIARY_MCP_URL
   #   OMBRE_DIARY_MCP_TOKEN_ENV
 

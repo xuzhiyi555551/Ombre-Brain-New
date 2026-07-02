@@ -474,7 +474,7 @@ def test_gateway_reading_note_direct_evidence_can_be_explicit(
     assert "reading_note: Use only if directly helpful" in block
     assert "mention_policy=" not in block
     assert "recall_policy.py 实体前置修复" in block
-    assert moment["_reading_note"]["canonical_domain"] == "project_code"
+    assert moment["_reading_note"]["canonical_domain"] == "project.companion_system"
 
 
 def test_gateway_recalled_memory_render_excludes_followup_sections(
@@ -5002,6 +5002,7 @@ def test_gateway_hook_recall_returns_cards_without_upstream(
             recalled_memory_budget=500,
             related_memory_budget=0,
             current_inner_state_interval_rounds=0,
+            domain_sentinel_enabled=False,
         ),
         bucket_mgr,
         embedding_results=[(bucket_id, 0.96)],
@@ -5019,7 +5020,7 @@ def test_gateway_hook_recall_returns_cards_without_upstream(
             json={
                 "query": "蓝色偏好",
                 "session_id": "sess-hook-recall",
-                "max_cards": 1,
+                "max_notes": 1,
             },
         )
 
@@ -5030,8 +5031,9 @@ def test_gateway_hook_recall_returns_cards_without_upstream(
     assert len(payload["cards"]) == 1
     card = payload["cards"][0]
     assert card["bucket_id"] == bucket_id
-    assert card["source"] == "ombre_gateway"
+    assert card["source"] == "ombre"
     assert card["source_kind"] == "direct"
+    assert 0.0 <= card["score"] <= 1.0
     assert card["use_mode"] in {"explicit", "light_touch"}
     assert card["confidence"] in {"high", "medium", "low"}
     assert "蓝色偏好" in card["text"]
@@ -5056,6 +5058,7 @@ def test_gateway_hook_recall_uses_word_map_terms_from_original_query(
         word_map_hint_enabled=True,
         word_map_hint_weight=1.0,
         first_card_min_score=0.01,
+        domain_sentinel_enabled=False,
     )
     cfg["identity"] = {
         **cfg.get("identity", {}),
@@ -5126,6 +5129,108 @@ def test_gateway_hook_recall_uses_word_map_terms_from_original_query(
     assert word_map_debug["enabled"] is True
     assert bucket_id in word_map_debug["bucket_ids"]
     assert "笔友" in word_map_debug["terms"]
+
+
+def test_gateway_hook_recall_domain_sentinel_only_routes_domains(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=0,
+        current_inner_state_interval_rounds=0,
+        domain_sentinel_enabled=True,
+        domain_sentinel_model="Qwen/Qwen3.5-4B",
+    )
+
+    def responder(_body, _request, _captured):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "domains": ["relationship.symbol"],
+                                    "query": "火焰 意象 小雨 Haven",
+                                    "confidence": 0.72,
+                                    "should_recall": False,
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    app, _service, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[],
+        upstream_responder=responder,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/hook/recall",
+            headers={"Authorization": "Bearer gateway-secret"},
+            json={
+                "message": "火焰那个意象还记得吗",
+                "session_id": "sess-hook-domain-sentinel",
+                "max_notes": 1,
+                "include_debug": True,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured[0]["json"]["model"] == "Qwen/Qwen3.5-4B"
+    assert captured[0]["json"]["enable_thinking"] is False
+    assert payload["debug"]["domains"] == ["relationship.symbol"]
+    assert payload["debug"]["query"] == "火焰 意象 小雨 Haven"
+    assert "should_recall" not in payload["debug"]
+
+
+def test_gateway_domain_sentinel_parser_rejects_noncanonical_domains(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    _app, service, _transport, _captured = _build_service(
+        monkeypatch,
+        _gateway_config(test_config, domain_sentinel_enabled=False),
+        bucket_mgr,
+    )
+
+    assert service._parse_domain_sentinel_response(
+        json.dumps(
+            {
+                "domains": [
+                    {"domain": "Semantic Memory", "query": "火焰 意象 小雨 Haven", "confidence": 0.95},
+                    {"domain": "Episodic Memory", "query": "火焰 意象 小雨 Haven", "confidence": 0.70},
+                ],
+                "query": "火焰 意象 小雨 Haven",
+                "confidence": 0.95,
+            },
+            ensure_ascii=False,
+        )
+    ) == {}
+    assert service._parse_domain_sentinel_response(
+        json.dumps(
+            {
+                "domains": [{"domain": "relationship.symbol"}],
+                "query": "火焰 意象 小雨 Haven",
+                "confidence": 0.72,
+            },
+            ensure_ascii=False,
+        )
+    )["domains"] == ["relationship.symbol"]
 
 
 def test_gateway_hook_recall_skips_empty_cards(monkeypatch, test_config, bucket_mgr):

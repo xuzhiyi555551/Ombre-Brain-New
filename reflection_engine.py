@@ -282,6 +282,12 @@ class ReflectionEngine:
         self.daily_chat_memory_turn_limit = max(0, min(10000, int(cfg.get("daily_chat_memory_turn_limit", 0))))
         self.daily_chat_memory_max_per_day = max(0, min(10, int(cfg.get("daily_chat_memory_max_per_day", 3))))
         self.daily_chat_memory_min_confidence = float(cfg.get("daily_chat_memory_min_confidence", 0.68))
+        self.daily_chat_memory_candidate_model = str(
+            cfg.get("daily_chat_memory_candidate_model") or self.model
+        ).strip()
+        self.daily_chat_memory_candidate_thinking_mode = self._normalize_thinking_mode(
+            cfg.get("daily_chat_memory_candidate_thinking_mode", "disabled")
+        )
         state_dir = config.get("state_dir") or os.path.join(
             os.path.dirname(os.path.abspath(config.get("buckets_dir", "buckets"))),
             "state",
@@ -1443,12 +1449,16 @@ class ReflectionEngine:
             }
             try:
                 response = await self.client.chat.completions.create(
-                    model=self.model,
+                    model=self.daily_chat_memory_candidate_model or self.model,
                     messages=[
                         {"role": "system", "content": self._daily_chat_memory_prompt()},
                         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
                     ],
-                    **self._completion_options(max_tokens=min(self.max_tokens, 700), temperature=self.temperature),
+                    **self._completion_options(
+                        max_tokens=min(self.max_tokens, 700),
+                        temperature=self.temperature,
+                        thinking_mode=self.daily_chat_memory_candidate_thinking_mode,
+                    ),
                 )
                 raw = response.choices[0].message.content if response.choices else ""
                 parsed = self._parse_json_object(raw or "")
@@ -2420,10 +2430,17 @@ class ReflectionEngine:
             parsed = parsed.replace(tzinfo=self.tz)
         return parsed.astimezone(self.tz)
 
-    def _completion_options(self, *, max_tokens: int, temperature: float) -> dict[str, Any]:
+    def _completion_options(
+        self,
+        *,
+        max_tokens: int,
+        temperature: float,
+        thinking_mode: str | None = None,
+    ) -> dict[str, Any]:
         options: dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
-        if self.thinking_mode:
-            options["extra_body"] = {"thinking": {"type": self.thinking_mode}}
+        mode = self.thinking_mode if thinking_mode is None else thinking_mode
+        if mode:
+            options["extra_body"] = {"thinking": {"type": mode}}
         return options
 
     def _parse_json_object(self, raw: str) -> dict:

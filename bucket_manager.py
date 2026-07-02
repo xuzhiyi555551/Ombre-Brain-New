@@ -354,7 +354,7 @@ class BucketManager:
     # ---------------------------------------------------------
     # Update bucket
     # 更新桶
-    # Supports: content, tags, importance, valence, arousal, name, resolved
+    # Supports: content, tags, facets, importance, valence, arousal, name, resolved
     # ---------------------------------------------------------
     async def update(self, bucket_id: str, **kwargs) -> bool:
         """
@@ -382,6 +382,8 @@ class BucketManager:
             post.content = kwargs["content"]  # wikilink injection disabled; LLM adds [[]] via prompt
         if "tags" in kwargs:
             post["tags"] = kwargs["tags"]
+        if "facets" in kwargs:
+            post["facets"] = kwargs["facets"] if isinstance(kwargs["facets"], list) else []
         if "importance" in kwargs:
             post["importance"] = max(1, min(10, int(kwargs["importance"])))
         if "domain" in kwargs:
@@ -467,6 +469,15 @@ class BucketManager:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
             self._move_bucket(file_path, self.permanent_dir, domain)
+        elif "domain" in kwargs and post.get("type") != "feel":
+            bucket_type = str(post.get("type") or "dynamic")
+            if bucket_type == "archived":
+                target_dir = self.archive_dir
+            elif bucket_type == "permanent":
+                target_dir = self.permanent_dir
+            else:
+                target_dir = self.dynamic_dir
+            self._move_bucket(file_path, target_dir, domain)
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
         return True
@@ -1374,6 +1385,8 @@ class BucketManager:
             # Read once, get domain info and update type / 一次性读取
             post = frontmatter.load(file_path)
             domain = post.get("domain", ["未分类"])
+            if not isinstance(domain, list):
+                domain = [domain]
             primary_domain = sanitize_name(domain[0]) if domain else "未分类"
             archive_subdir = os.path.join(self.archive_dir, primary_domain)
             os.makedirs(archive_subdir, exist_ok=True)
@@ -1395,6 +1408,45 @@ class BucketManager:
             return False
 
         logger.info(f"Archived bucket / 归档记忆桶: {bucket_id} → archive/{primary_domain}/")
+        return True
+
+    async def activate(self, bucket_id: str) -> bool:
+        """
+        Move an archived bucket back to dynamic storage and mark it active.
+        将归档桶移回 dynamic，并标为 active。
+        """
+        file_path = self._find_bucket_file(bucket_id)
+        if not file_path:
+            return False
+
+        try:
+            post = frontmatter.load(file_path)
+            domain = post.get("domain", ["未分类"])
+            if not isinstance(domain, list):
+                domain = [domain]
+            primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+            target_dir = os.path.join(self.dynamic_dir, primary_domain)
+            os.makedirs(target_dir, exist_ok=True)
+            dest = safe_path(target_dir, os.path.basename(file_path))
+
+            post["type"] = "dynamic"
+            post["active"] = True
+            post["deprecated"] = False
+            post["resolved"] = False
+            post["updated_at"] = now_iso()
+            post["last_active"] = post.get("last_active") or post["updated_at"]
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+
+            if os.path.normpath(file_path) != os.path.normpath(str(dest)):
+                shutil.move(file_path, str(dest))
+        except Exception as e:
+            logger.error(
+                f"Failed to activate bucket / 恢复桶失败: {bucket_id}: {e}"
+            )
+            return False
+
+        logger.info(f"Activated bucket / 恢复记忆桶: {bucket_id} → dynamic/{primary_domain}/")
         return True
 
     # ---------------------------------------------------------

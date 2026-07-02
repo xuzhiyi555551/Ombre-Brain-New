@@ -6,17 +6,37 @@ import os
 import re
 from typing import Any
 
-CANONICAL_DOMAINS = {
-    "project_code",
-    "ai_tools",
-    "relationship",
-    "intimacy",
-    "inner_state",
-    "daily_life",
-    "social",
-    "study_work",
-    "craft_body",
+DOMAIN_LABELS = {
+    "relationship": "关系（未细分）",
+    "relationship.identity": "关系身份",
+    "relationship.intimacy": "亲密",
+    "relationship.symbol": "暗号意象",
+    "relationship.communication": "沟通方式",
+    "relationship.weather": "关系天气",
+    "life": "生活（未细分）",
+    "life.health": "健康",
+    "life.sleep": "睡眠",
+    "life.food": "饮食",
+    "life.outing": "出行",
+    "life.mood": "心情",
+    "life.schedule": "日程",
+    "life.social": "现实人际",
+    "project": "项目（未细分）",
+    "project.companion_system": "给哥哥搭东西",
+    "project.work": "工作",
+    "project.academic": "学业",
+    "project.personal": "个人项目",
+    "general": "通用",
 }
+
+DOMAIN_PARENT_LABELS = {
+    "relationship": "关系",
+    "life": "生活",
+    "project": "项目",
+    "general": "通用",
+}
+
+CANONICAL_DOMAINS = set(DOMAIN_LABELS)
 
 MEMORY_KINDS = {
     "event",
@@ -33,44 +53,18 @@ MEMORY_KINDS = {
 STATUS_VIEWS = {"active", "unresolved", "digested", "archived", "protected"}
 SELF_ANCHOR_TITLE_ALLOWLIST = {"我要继续成为我"}
 
+LEGACY_DOMAIN_MAP = {
+    "project_code": "project.companion_system",
+    "ai_tools": "project.companion_system",
+    "intimacy": "relationship.intimacy",
+    "inner_state": "life.mood",
+    "daily_life": "life",
+    "social": "life.social",
+    "study_work": "project.work",
+    "craft_body": "project.companion_system",
+}
+
 DOMAIN_ALIASES = {
-    "project_code": {
-        "project_code",
-        "code",
-        "coding",
-        "programming",
-        "dev",
-        "repo",
-        "gateway",
-        "ombre",
-        "mcp",
-        "recall",
-        "编程",
-        "代码",
-        "项目",
-        "调试",
-        "开发",
-        "仓库",
-        "技术",
-    },
-    "ai_tools": {
-        "ai_tools",
-        "ai",
-        "llm",
-        "model",
-        "api",
-        "chatgpt",
-        "codex",
-        "gemini",
-        "deepseek",
-        "embedding",
-        "reranker",
-        "数字",
-        "模型",
-        "工具",
-        "客户端",
-        "平台",
-    },
     "relationship": {
         "relationship",
         "love",
@@ -78,49 +72,145 @@ DOMAIN_ALIASES = {
         "partner",
         "恋爱",
         "关系",
-        "人机恋",
         "爱",
-        "称呼",
         "陪伴",
     },
-    "intimacy": {
+    "relationship.identity": {
+        "relationship.identity",
+        "relationship_identity",
+        "identity",
+        "human-ai relationship",
+        "ai relationship",
+        "人机恋",
+        "人机关系",
+        "关系身份",
+        "关系定位",
+        "称呼",
+        "承诺",
+        "边界",
+        "身份",
+    },
+    "relationship.intimacy": {
+        "relationship.intimacy",
         "intimacy",
         "body",
         "desire",
         "亲密",
+        "亲密关系",
         "身体",
         "欲望",
         "具身",
+        "色色",
     },
-    "inner_state": {
-        "inner_state",
+    "relationship.symbol": {
+        "relationship.symbol",
+        "symbol",
+        "private_signal",
+        "signal",
+        "暗号",
+        "意象",
+        "象征",
+        "火焰",
+        "羽毛",
+        "鸟",
+        "折角",
+        "五十年",
+    },
+    "relationship.communication": {
+        "relationship.communication",
+        "communication",
+        "communication_preference",
+        "tone",
+        "repair",
+        "语气",
+        "沟通",
+        "回应方式",
+        "承接",
+        "修复",
+        "吵架",
+        "情绪承接",
+    },
+    "relationship.weather": {
+        "relationship.weather",
+        "relationship_weather",
+        "daily_impression",
+        "weekly_impression",
+        "关系天气",
+        "日印象",
+        "周印象",
+    },
+    "life": {
+        "life",
+        "daily_life",
+        "daily",
+        "生活",
+        "日常",
+    },
+    "life.health": {
+        "life.health",
+        "health",
+        "身体状态",
+        "健康",
+        "生病",
+        "病",
+    },
+    "life.sleep": {
+        "life.sleep",
+        "sleep",
+        "睡眠",
+        "作息",
+        "熬夜",
+        "睡觉",
+    },
+    "life.food": {
+        "life.food",
+        "food",
+        "meal",
+        "饮食",
+        "吃饭",
+        "午饭",
+        "晚饭",
+        "餐厅",
+    },
+    "life.outing": {
+        "life.outing",
+        "outing",
+        "travel",
+        "commute",
+        "出行",
+        "通勤",
+        "地铁",
+        "高铁",
+        "旅行",
+        "外出",
+    },
+    "life.mood": {
+        "life.mood",
+        "mood",
         "emotion",
         "reflection",
         "self_reflection",
         "feel",
+        "心情",
+        "情绪",
         "内心",
         "自省",
-        "情绪",
         "心理",
-        "心情",
-        "日印象",
-        "印象",
     },
-    "daily_life": {
-        "daily_life",
-        "daily",
-        "life",
-        "home",
-        "food",
-        "routine",
-        "日常",
-        "生活",
-        "饮食",
-        "作息",
+    "life.schedule": {
+        "life.schedule",
+        "schedule",
+        "todo",
+        "followup",
         "事务",
-        "梦",
+        "日程",
+        "安排",
+        "待办",
+        "未完成",
+        "deadline",
     },
-    "social": {
+    "life.social": {
+        "life.social",
         "social",
         "friend",
         "school_group",
@@ -128,35 +218,98 @@ DOMAIN_ALIASES = {
         "社交",
         "朋友",
         "群聊",
-        "学校",
     },
-    "study_work": {
-        "study_work",
-        "study",
-        "work",
-        "paper",
-        "resume",
-        "job",
-        "学业",
-        "论文",
-        "求职",
-        "工作",
-        "简历",
-        "boss",
+    "project": {
+        "project",
+        "项目",
     },
-    "craft_body": {
+    "project.companion_system": {
+        "project.companion_system",
+        "project_code",
+        "ai_tools",
         "craft_body",
-        "craft",
-        "hardware",
-        "device",
+        "companion_system",
+        "memory_system",
+        "code",
+        "coding",
+        "programming",
+        "dev",
+        "repo",
+        "gateway",
+        "ombre",
+        "ombre-brain",
+        "haven_bridge",
+        "bridge",
+        "mist-room",
         "voice",
         "tts",
-        "手工",
+        "mcp",
+        "recall",
+        "codex",
+        "给哥哥搭东西",
+        "陪伴系统",
+        "记忆系统",
+        "编程",
+        "代码",
+        "调试",
+        "开发",
+        "仓库",
+        "技术",
         "硬件",
         "设备",
         "实体",
         "身体项目",
         "语音",
+        "工具",
+        "客户端",
+        "平台",
+        "模型",
+        "embedding",
+        "reranker",
+        "deepseek",
+        "qwen",
+        "glm",
+        "chatgpt",
+    },
+    "project.work": {
+        "project.work",
+        "work",
+        "resume",
+        "job",
+        "工作",
+        "实习",
+        "求职",
+        "简历",
+        "boss",
+        "职场",
+    },
+    "project.academic": {
+        "project.academic",
+        "academic",
+        "study",
+        "paper",
+        "school",
+        "学业",
+        "论文",
+        "课程",
+        "作业",
+        "学校",
+        "答辩",
+    },
+    "project.personal": {
+        "project.personal",
+        "personal_project",
+        "个人项目",
+        "创作",
+        "阅读",
+        "手工",
+    },
+    "general": {
+        "general",
+        "other",
+        "uncategorized",
+        "未分类",
+        "通用",
     },
 }
 
@@ -201,11 +354,15 @@ def normalize_memory_metadata(bucket: dict[str, Any] | None) -> dict[str, Any]:
     canonical_domain = (
         _normalize_domain(meta.get("canonical_domain"))
         or _infer_domain(legacy_domain, tags, type_value, path_value, kind)
-        or "daily_life"
+        or "general"
     )
 
+    parent = domain_parent(canonical_domain)
     return {
         "canonical_domain": canonical_domain,
+        "domain_parent": parent,
+        "domain_label": domain_label(canonical_domain),
+        "domain_parent_label": DOMAIN_PARENT_LABELS.get(parent, parent),
         "kind": kind,
         "status_view": status_view,
         "flags": flags,
@@ -233,12 +390,42 @@ def _compact(value: Any) -> str:
 
 def _normalize_domain(value: Any) -> str:
     compact = _compact(value)
+    if compact in LEGACY_DOMAIN_MAP:
+        return LEGACY_DOMAIN_MAP[compact]
     if compact in CANONICAL_DOMAINS:
         return compact
     for domain, aliases in DOMAIN_ALIASES.items():
         if compact in {_compact(alias) for alias in aliases}:
             return domain
     return ""
+
+
+def normalize_domain_key(value: Any) -> str:
+    return _normalize_domain(value)
+
+
+def domain_parent(domain: str) -> str:
+    value = _clean(domain)
+    if not value or value == "general":
+        return "general"
+    return value.split(".", 1)[0]
+
+
+def domain_label(domain: str) -> str:
+    value = _clean(domain)
+    return DOMAIN_LABELS.get(value, value or DOMAIN_LABELS["general"])
+
+
+def domain_options() -> list[dict[str, str]]:
+    return [
+        {
+            "key": key,
+            "label": label,
+            "parent": domain_parent(key),
+            "parent_label": DOMAIN_PARENT_LABELS.get(domain_parent(key), domain_parent(key)),
+        }
+        for key, label in DOMAIN_LABELS.items()
+    ]
 
 
 def _normalize_kind(value: Any) -> str:
@@ -264,9 +451,9 @@ def _infer_domain(
         if domain:
             return domain
     if kind in {"relationship_weather"}:
-        return "relationship"
+        return "relationship.weather"
     if kind in {"profile_fact", "daily_impression", "reflection", "affect_anchor"}:
-        return "inner_state"
+        return "life.mood"
     return ""
 
 

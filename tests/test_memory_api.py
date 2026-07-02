@@ -234,7 +234,8 @@ async def test_dashboard_bucket_payloads_include_read_only_metadata_view(monkeyp
     list_payload = json.loads(list_response.body)
     row = next(item for item in list_payload if item["id"] == bucket_id)
 
-    assert row["canonical_domain"] == "ai_tools"
+    assert row["canonical_domain"] == "project.companion_system"
+    assert row["domain_label"] == "给哥哥搭东西"
     assert row["kind"] == "source_record"
     assert row["status_view"] == "unresolved"
     assert row["legacy_domain"] == ["AI", "未解决"]

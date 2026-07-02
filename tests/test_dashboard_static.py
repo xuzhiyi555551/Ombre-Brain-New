@@ -375,6 +375,9 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert 'id="cfg-word-map-hint-enabled"' in html
     assert 'id="cfg-query-planner-enabled"' in html
     assert 'id="cfg-memory-sentinel-llm-enabled"' in html
+    assert 'id="cfg-domain-sentinel-enabled"' in html
+    assert 'id="cfg-domain-sentinel-model"' in html
+    assert 'id="cfg-domain-sentinel-thinking"' in html
     assert 'id="cfg-query-planner-model"' not in html
     assert 'id="cfg-memory-detail-recall-enabled"' in html
     assert 'id="cfg-memory-detail-recall-max-ids"' in html
@@ -397,6 +400,9 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "cfg.gateway.word_map_hint_enabled" in html
     assert "cfg.gateway.query_planner_enabled" in html
     assert "cfg.gateway.memory_sentinel_llm_enabled" in html
+    assert "cfg.gateway.domain_sentinel_enabled" in html
+    assert "cfg.gateway.domain_sentinel_model" in html
+    assert "cfg.gateway.domain_sentinel_enable_thinking" in html
     assert "cfg.gateway.query_planner_model" not in html
     assert "cfg.gateway.memory_detail_recall_enabled" in html
     assert "cfg.gateway.memory_detail_recall_max_ids" in html
@@ -416,6 +422,9 @@ def test_dashboard_exposes_gateway_memory_cooldown_settings():
     assert "word_map_hint_enabled: document.getElementById('cfg-word-map-hint-enabled').value === 'true'," in html
     assert "query_planner_enabled: document.getElementById('cfg-query-planner-enabled').value === 'true'," in html
     assert "memory_sentinel_llm_enabled: document.getElementById('cfg-memory-sentinel-llm-enabled').value === 'true'," in html
+    assert "domain_sentinel_enabled: document.getElementById('cfg-domain-sentinel-enabled').value === 'true'," in html
+    assert "domain_sentinel_model: document.getElementById('cfg-domain-sentinel-model').value," in html
+    assert "domain_sentinel_enable_thinking: document.getElementById('cfg-domain-sentinel-thinking').value === 'true'," in html
     assert "query_planner_model: document.getElementById('cfg-query-planner-model').value," not in html
     assert "memory_detail_recall_enabled: document.getElementById('cfg-memory-detail-recall-enabled').value === 'true'," in html
     assert "memory_detail_recall_max_ids: numberValue('cfg-memory-detail-recall-max-ids', 3)," in html
@@ -451,11 +460,13 @@ def test_dashboard_exposes_reflection_affect_anchor_switches():
     load_block = html.split("async function loadConfig()", 1)[1].split("async function saveConfig", 1)[0]
     save_block = html.split("async function saveConfig", 1)[1].split("var keyVal =", 1)[0]
 
-    assert "<h3>记忆关系整理</h3>" in html
+    assert "<h3>关系记忆整理</h3>" in html
     assert 'id="cfg-reflection-enabled"' in html
     assert 'id="cfg-reflection-auto"' in html
     assert 'id="cfg-reflection-memory-anchor"' in html
     assert 'id="cfg-reflection-weather-anchor"' in html
+    assert 'id="cfg-reflection-candidate-model"' in html
+    assert 'id="cfg-reflection-candidate-thinking"' in html
     assert 'id="cfg-reflection-model"' in html
     assert 'id="cfg-reflection-url"' in html
     assert 'id="cfg-reflection-key"' in html
@@ -463,10 +474,14 @@ def test_dashboard_exposes_reflection_affect_anchor_switches():
     assert "cfg.reflection.auto_enabled" in load_block
     assert "cfg.reflection.memory_affect_anchor_enabled" in load_block
     assert "cfg.reflection.relationship_weather_affect_anchor_enabled" in load_block
+    assert "cfg.reflection.daily_chat_memory_candidate_model" in load_block
+    assert "cfg.reflection.daily_chat_memory_candidate_thinking_mode" in load_block
     reflection_block = save_block.split("candidate.reflection = {", 1)[1].split("};", 1)[0]
     assert "base_url: document.getElementById('cfg-reflection-url').value," in reflection_block
     assert "enabled: document.getElementById('cfg-reflection-enabled').value === 'true'," in reflection_block
     assert "model: document.getElementById('cfg-reflection-model').value," in reflection_block
+    assert "daily_chat_memory_candidate_model: document.getElementById('cfg-reflection-candidate-model').value," in reflection_block
+    assert "daily_chat_memory_candidate_thinking_mode: document.getElementById('cfg-reflection-candidate-thinking').value," in reflection_block
     assert "if (!body.reflection) body.reflection = {};" in html
     assert "body.reflection.api_key = reflectionKeyVal;" in html
 

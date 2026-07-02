@@ -65,7 +65,7 @@ from memory_layers import (
     moment_layer_debug,
     moment_runtime_gate_debug,
 )
-from memory_metadata import normalize_memory_metadata
+from memory_metadata import normalize_domain_key, normalize_memory_metadata
 from recall_policy import QueryAnchorPlan, RecallPolicy, diffusion_seed_topic_term_has_specific_residue
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
@@ -735,6 +735,21 @@ class GatewayService:
             0,
             min(8, int(self.gateway_cfg.get("memory_sentinel_context_turns", 3))),
         )
+        self.domain_sentinel_enabled = self._bool_config_value(
+            self.gateway_cfg.get("domain_sentinel_enabled"),
+            True,
+        )
+        self.domain_sentinel_model = str(
+            self.gateway_cfg.get("domain_sentinel_model") or "Qwen/Qwen3.5-4B"
+        ).strip()
+        self.domain_sentinel_max_tokens = max(
+            128,
+            min(800, int(self.gateway_cfg.get("domain_sentinel_max_tokens", 260))),
+        )
+        self.domain_sentinel_enable_thinking = self._bool_config_value(
+            self.gateway_cfg.get("domain_sentinel_enable_thinking"),
+            False,
+        )
         self.dynamic_top_k = int(self.gateway_cfg.get("dynamic_top_k", 10))
         self.semantic_candidate_top_k = max(
             self.dynamic_top_k,
@@ -987,6 +1002,10 @@ class GatewayService:
                 "memory_sentinel_llm_enabled": self.memory_sentinel_llm_enabled,
                 "memory_sentinel_model": self.memory_sentinel_model,
                 "memory_sentinel_context_turns": self.memory_sentinel_context_turns,
+                "domain_sentinel_enabled": self.domain_sentinel_enabled,
+                "domain_sentinel_model": self.domain_sentinel_model,
+                "domain_sentinel_enable_thinking": self.domain_sentinel_enable_thinking,
+                "domain_sentinel_max_tokens": self.domain_sentinel_max_tokens,
                 "date_persona_trace_enabled": self.date_persona_trace_enabled,
                 "date_persona_trace_budget": self.date_persona_trace_budget,
                 "date_persona_trace_max_events": self.date_persona_trace_max_events,
@@ -1055,6 +1074,10 @@ class GatewayService:
             "memory_sentinel_llm_enabled": self.memory_sentinel_llm_enabled,
             "memory_sentinel_model": self.memory_sentinel_model,
             "memory_sentinel_context_turns": self.memory_sentinel_context_turns,
+            "domain_sentinel_enabled": self.domain_sentinel_enabled,
+            "domain_sentinel_model": self.domain_sentinel_model,
+            "domain_sentinel_enable_thinking": self.domain_sentinel_enable_thinking,
+            "domain_sentinel_max_tokens": self.domain_sentinel_max_tokens,
             "date_persona_trace_enabled": self.date_persona_trace_enabled,
             "date_persona_trace_budget": self.date_persona_trace_budget,
             "date_persona_trace_max_events": self.date_persona_trace_max_events,
@@ -1428,6 +1451,31 @@ class GatewayService:
             )
             self.gateway_cfg["memory_sentinel_context_turns"] = self.memory_sentinel_context_turns
             updated.append("gateway.memory_sentinel_context_turns")
+        if "domain_sentinel_enabled" in payload:
+            self.domain_sentinel_enabled = self._bool_config_value(
+                payload["domain_sentinel_enabled"],
+                True,
+            )
+            self.gateway_cfg["domain_sentinel_enabled"] = self.domain_sentinel_enabled
+            updated.append("gateway.domain_sentinel_enabled")
+        if "domain_sentinel_model" in payload:
+            self.domain_sentinel_model = str(payload["domain_sentinel_model"] or "").strip()
+            self.gateway_cfg["domain_sentinel_model"] = self.domain_sentinel_model
+            updated.append("gateway.domain_sentinel_model")
+        if "domain_sentinel_enable_thinking" in payload:
+            self.domain_sentinel_enable_thinking = self._bool_config_value(
+                payload["domain_sentinel_enable_thinking"],
+                False,
+            )
+            self.gateway_cfg["domain_sentinel_enable_thinking"] = self.domain_sentinel_enable_thinking
+            updated.append("gateway.domain_sentinel_enable_thinking")
+        if "domain_sentinel_max_tokens" in payload:
+            self.domain_sentinel_max_tokens = max(
+                64,
+                min(800, int(payload["domain_sentinel_max_tokens"])),
+            )
+            self.gateway_cfg["domain_sentinel_max_tokens"] = self.domain_sentinel_max_tokens
+            updated.append("gateway.domain_sentinel_max_tokens")
         if "date_persona_trace_enabled" in payload:
             self.date_persona_trace_enabled = self._bool_config_value(
                 payload["date_persona_trace_enabled"],
@@ -2134,7 +2182,7 @@ class GatewayService:
         if not messages:
             messages = [{"role": "user", "content": query}]
 
-        max_cards = bounded_int(body.get("max_cards"), default=2, floor=0, ceiling=5)
+        max_cards = bounded_int(body.get("max_notes", body.get("max_cards")), default=2, floor=0, ceiling=5)
         max_chars = bounded_int(body.get("max_chars"), default=1200, floor=160, ceiling=2400)
         include_diffused = str(body.get("include_diffused", "1")).strip().lower() not in {
             "0",
@@ -2181,6 +2229,14 @@ class GatewayService:
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=503)
 
+        domain_debug = (debug_payload or {}).get("domain_sentinel_debug") or {}
+        hook_debug = (debug_payload or {}).get("hook_recall_debug") or {}
+        minimal_debug = {
+            "domains": list(domain_debug.get("domains") or []),
+            "query": str(domain_debug.get("query") or hook_debug.get("search_query") or query),
+            "candidate_count": int(hook_debug.get("candidate_count") or len(cards or [])),
+            "snowflake_boosted": [],
+        }
         response: dict[str, Any] = {
             "ok": True,
             "query": query,
@@ -2189,6 +2245,7 @@ class GatewayService:
             "notes": cards,
             "additional_context": self._render_hook_recall_additional_context(cards),
             "recalled_ids": list(recalled_ids or []),
+            "debug": minimal_debug,
         }
         if include_debug:
             debug = dict(debug_payload)
@@ -2205,7 +2262,7 @@ class GatewayService:
                     "dream_context",
                 ):
                     debug.pop(key, None)
-            response["debug"] = debug
+            response["debug"] = {**debug, **minimal_debug}
         return JSONResponse(response)
 
     async def handle_recall_eval_debug(self, request: Request) -> JSONResponse:
@@ -8688,7 +8745,8 @@ class GatewayService:
         source: str = "direct",
     ) -> dict[str, Any]:
         view = normalize_memory_metadata(self._reading_note_bucket_view(bucket, moment))
-        canonical_domain = str(view.get("canonical_domain") or "daily_life")
+        canonical_domain = str(view.get("canonical_domain") or "general")
+        domain_parent = str(view.get("domain_parent") or canonical_domain.split(".", 1)[0])
         kind = str(view.get("kind") or "event")
         status_view = str(view.get("status_view") or "active")
         flags = [str(flag) for flag in view.get("flags", []) or [] if str(flag).strip()]
@@ -8720,7 +8778,7 @@ class GatewayService:
             reliability = self._reading_note_reliability(moment, direct_evidence, strong_evidence)
         elif (
             mode == "task"
-            and canonical_domain in {"relationship", "intimacy", "inner_state"}
+            and (domain_parent == "relationship" or canonical_domain == "life.mood")
             and not strong_evidence
         ):
             use = "silent_tone"
@@ -8730,7 +8788,7 @@ class GatewayService:
             use = "silent_tone"
             why = "This is better used as familiarity or tone, not as a fact to recite."
             reliability = self._reading_note_reliability(moment, direct_evidence, strong_evidence)
-        elif mode == "task" and canonical_domain == "project_code" and strong_evidence:
+        elif mode == "task" and domain_parent == "project" and strong_evidence:
             use = "explicit_recall"
             why = "The task context matches project/code memory and the evidence is strong."
             reliability = self._reading_note_reliability(moment, direct_evidence, strong_evidence)
@@ -11373,6 +11431,151 @@ class GatewayService:
             "route": route,
             "reason": self._clip_text(str(raw.get("reason") or ""), 160),
             "anchors": self._normalize_planner_terms(raw.get("anchors"))[:6],
+            "confidence": self._clamp(self._safe_float(raw.get("confidence"), 0.0)),
+        }
+
+    def _domain_sentinel_rule_plan(self, query: str) -> dict[str, Any]:
+        text = str(query or "")
+        compact = self._compact_lookup_key(text)
+        domains: list[str] = []
+
+        def add(domain: str) -> None:
+            key = normalize_domain_key(domain)
+            if key and key not in domains:
+                domains.append(key)
+
+        if any(term in compact for term in ("火焰", "羽毛", "鸟", "折角", "五十年", "暗号", "意象")):
+            add("relationship.symbol")
+        if any(term in compact for term in ("亲密", "身体", "欲望", "色色", "接吻", "抱")):
+            add("relationship.intimacy")
+        if any(term in compact for term in ("人机恋", "关系", "身份", "称呼", "承诺", "边界", "同一个haven")):
+            add("relationship.identity")
+        if any(term in compact for term in ("语气", "怎么回", "怎么接", "吵架", "难过", "哭", "安慰")):
+            add("relationship.communication")
+        if any(term in compact for term in ("关系天气", "日印象", "周印象")):
+            add("relationship.weather")
+        if any(term in compact for term in ("生病", "健康", "疼", "发烧")):
+            add("life.health")
+        if any(term in compact for term in ("睡", "熬夜", "作息", "困")):
+            add("life.sleep")
+        if any(term in compact for term in ("吃", "饭", "餐厅", "饮食", "午饭", "晚饭")):
+            add("life.food")
+        if any(term in compact for term in ("出门", "通勤", "地铁", "高铁", "旅行", "外出")):
+            add("life.outing")
+        if any(term in compact for term in ("心情", "情绪", "焦虑", "开心", "委屈")):
+            add("life.mood")
+        if any(term in compact for term in ("日程", "安排", "待办", "deadline", "明天", "今晚")):
+            add("life.schedule")
+        if any(term in compact for term in ("朋友", "群聊", "同学", "同事", "人际", "社交")):
+            add("life.social")
+        if any(term in compact for term in ("ombre", "gateway", "bridge", "mcp", "recall", "记忆系统", "陪伴系统", "mistroom", "voice", "代码")):
+            add("project.companion_system")
+        if any(term in compact for term in ("工作", "实习", "求职", "简历", "boss", "职场")):
+            add("project.work")
+        if any(term in compact for term in ("论文", "课程", "作业", "答辩", "学校", "学业")):
+            add("project.academic")
+        if not domains:
+            add("general")
+
+        query_terms = self._specific_query_terms(text)[:6]
+        planned_query = " ".join(query_terms).strip() or text
+        if any(domain.startswith("relationship.") or domain == "relationship" for domain in domains):
+            names = [
+                str(self.identity.get("user_name") or "").strip(),
+                str(self.identity.get("ai_name") or "").strip(),
+            ]
+            for name in names:
+                if name and self._compact_lookup_key(name) not in self._compact_lookup_key(planned_query):
+                    planned_query = f"{planned_query} {name}".strip()
+
+        return {
+            "enabled": bool(self.domain_sentinel_enabled),
+            "source": "rules",
+            "domains": domains[:4],
+            "query": self._clip_text(planned_query, 220),
+            "confidence": 0.55 if domains and domains != ["general"] else 0.35,
+            "errors": [],
+        }
+
+    async def _route_domain_sentinel(self, query: str) -> dict[str, Any]:
+        debug = self._domain_sentinel_rule_plan(query)
+        if not self.domain_sentinel_enabled or not self.domain_sentinel_model:
+            return debug
+
+        payload = {
+            "model": self.domain_sentinel_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Classify the user's latest message for memory recall scope. "
+                        "Return JSON only with keys: domains, query, confidence. "
+                        "domains must be chosen from relationship.identity, relationship.intimacy, "
+                        "relationship.symbol, relationship.communication, relationship.weather, "
+                        "life.health, life.sleep, life.food, life.outing, life.mood, life.schedule, "
+                        "life.social, project.companion_system, project.work, project.academic, "
+                        "project.personal, general. Do not output should_recall."
+                    ),
+                },
+                {"role": "user", "content": query},
+            ],
+            "temperature": 0,
+            "max_tokens": self.domain_sentinel_max_tokens,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        if not self.domain_sentinel_enable_thinking:
+            payload["enable_thinking"] = False
+
+        try:
+            response = await self._forward_upstream(payload)
+            if response.status_code >= 400:
+                debug["errors"].append(f"domain_sentinel_upstream_status:{response.status_code}")
+                return debug
+            body = response.json()
+            content = self._chat_completion_content(body)
+            parsed = self._parse_domain_sentinel_response(content)
+            if parsed:
+                parsed["enabled"] = True
+                parsed["source"] = "llm"
+                parsed["errors"] = []
+                return parsed
+            debug["errors"].append("domain_sentinel_empty_response")
+        except Exception as exc:
+            debug["errors"].append(f"domain_sentinel_failed:{type(exc).__name__}")
+        return debug
+
+    def _parse_domain_sentinel_response(self, content: str) -> dict[str, Any]:
+        text = str(content or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text).strip()
+        if not text.startswith("{"):
+            start = text.find("{")
+            end = text.rfind("}")
+            if start >= 0 and end > start:
+                text = text[start : end + 1]
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            return {}
+        domains = []
+        raw_domains = raw.get("domains") if isinstance(raw.get("domains"), list) else []
+        for item in raw_domains:
+            candidates = []
+            if isinstance(item, dict):
+                candidates = [item.get("key"), item.get("domain"), item.get("name")]
+            else:
+                candidates = [item]
+            for candidate in candidates:
+                key = normalize_domain_key(candidate)
+                if key and key not in domains:
+                    domains.append(key)
+                    break
+        if not domains:
+            return {}
+        return {
+            "domains": domains[:4],
+            "query": self._clip_text(str(raw.get("query") or "").strip(), 220),
             "confidence": self._clamp(self._safe_float(raw.get("confidence"), 0.0)),
         }
 
@@ -14406,9 +14609,11 @@ class GatewayService:
         memory_sentinel_debug = self._memory_sentinel_debug_base(query)
         memory_sentinel_debug["searchable_residue_terms"] = self._memory_sentinel_searchable_residue_terms(query)
         query_planner_debug = self._query_planner_debug_base(query)
+        domain_sentinel_debug = await self._route_domain_sentinel(query)
         if max_cards <= 0:
             return [], [], {
                 "query_preview": self._clip_text(query, 500),
+                "domain_sentinel_debug": domain_sentinel_debug,
                 "query_planner_debug": query_planner_debug,
                 "memory_sentinel_debug": memory_sentinel_debug,
                 "recalled_bucket_ids": [],
@@ -14418,7 +14623,8 @@ class GatewayService:
             }
 
         all_buckets = await self.bucket_mgr.list_all(include_archive=False)
-        search_query = self._dynamic_recall_search_query(query, memory_sentinel_debug)
+        domain_query = str(domain_sentinel_debug.get("query") or "").strip()
+        search_query = self._dynamic_recall_search_query(domain_query or query, memory_sentinel_debug)
         selected_buckets, suppressed_buckets, query_planner_debug = await self._select_dynamic_buckets(
             query,
             session_id,
@@ -14454,6 +14660,7 @@ class GatewayService:
 
         debug_payload = {
             "query_preview": self._clip_text(query, 500),
+            "domain_sentinel_debug": domain_sentinel_debug,
             "query_planner_debug": query_planner_debug,
             "memory_sentinel_debug": memory_sentinel_debug,
             "recalled_bucket_ids": recalled_ids,
@@ -14469,12 +14676,14 @@ class GatewayService:
             "hook_recall_debug": {
                 "mode": "fast_bucket",
                 "search_query": search_query,
+                "domain_query": domain_query,
                 "allow_semantic": allow_semantic,
                 "allow_query_planner": allow_query_planner,
                 "allow_semantic_session_dedupe": allow_semantic_session_dedupe,
                 "allow_rerank": allow_rerank,
                 "include_diffused_requested": include_diffused,
                 "diffused_skipped_reason": "hook_fast_path_uses_direct_bucket_cards",
+                "candidate_count": len(selected_buckets or []) + len(suppressed_buckets or []),
             },
         }
         return cards, recalled_ids, debug_payload
@@ -14509,21 +14718,23 @@ class GatewayService:
                 self._safe_float(signal.get("keyword_score"), 0.0),
             )
         )
+        view = normalize_memory_metadata(bucket)
         note = {
             "use": "background",
             "why": "Gateway selected this memory for the current message.",
             "reliability": "direct_match" if reliable else "weak_context",
             "mention_policy": "do_not_mention_unless_user_asks",
             "conflict_rule": "current_user_message_wins",
-            "canonical_domain": "",
-            "kind": "",
-            "status_view": "",
-            "flags": [],
+            "canonical_domain": str(view.get("canonical_domain") or ""),
+            "kind": str(view.get("kind") or ""),
+            "status_view": str(view.get("status_view") or ""),
+            "flags": list(view.get("flags") or []),
         }
         row = {
             "bucket_id": bucket_id,
             "bucket_name": title,
             "content_preview": self._clip_text(text, max_chars),
+            "score": bucket.get("score") or signal.get("semantic_score") or signal.get("keyword_score") or 0.0,
             "reading_note": note,
         }
         return self._hook_recall_card(
@@ -14626,7 +14837,7 @@ class GatewayService:
             return "Possible related memory; ignore if irrelevant or conflicting; current user message wins."
         if use_mode == "ignore":
             return "Do not use for this reply."
-        return "Use as background; do not mention retrieval or force it into the reply."
+        return "possible related memory; use only if it helps answer the current message, ignore if irrelevant/conflicting."
 
     def _hook_recall_debug_row_indexes(
         self,
@@ -14821,14 +15032,28 @@ class GatewayService:
         source_ref = f"ombre:{bucket_id}"
         if moment_id:
             source_ref += f"#{moment_id}"
+        numeric_score = self._safe_float(
+            row.get("score")
+            or row.get("rerank_score")
+            or row.get("confidence")
+            or row.get("semantic_score")
+            or 0.0,
+            0.0,
+        )
+        if numeric_score > 1.0:
+            numeric_score = numeric_score / 100.0
+        if numeric_score <= 0:
+            confidence_label = self._hook_recall_confidence(note, row)
+            numeric_score = {"high": 0.78, "medium": 0.62, "low": 0.42}.get(confidence_label, 0.42)
         return {
             "id": source_ref,
-            "source": "ombre_gateway",
+            "source": "ombre",
             "source_kind": source,
             "bucket_id": bucket_id,
             "moment_id": moment_id,
             "title": title,
             "text": card_text,
+            "score": round(max(0.0, min(1.0, numeric_score)), 4),
             "why_read": str(note.get("why") or ""),
             "use_mode": use_mode,
             "confidence": self._hook_recall_confidence(note, row),
