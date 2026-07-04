@@ -187,7 +187,7 @@ todo_store = TodoStore(config)                            # Followup/todo derive
 mcp = FastMCP(
     "Ombre Brain",
     host="0.0.0.0",
-    port=8000,
+port=int(os.environ.get("PORT", 8000)),
 )
 
 
@@ -12765,6 +12765,6 @@ if __name__ == "__main__":
                 "ChatGPT OAuth enabled for Ombre MCP / 已启用 ChatGPT OAuth: protected_hosts=%s",
                 sorted(OMBRE_CHATGPT_OAUTH_PROTECTED_HOSTS),
             )
-        uvicorn.run(_app, host="0.0.0.0", port=8000)
+uvicorn.run(_app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
     else:
         mcp.run(transport=transport)
